@@ -1,0 +1,45 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <title>Easy Apply Job</title>
+  <style>
+    body {
+      font-family: Arial, sans-serif;
+      width: 320px;
+      padding: 15px;
+      margin: 0;
+    }
+    textarea {
+      width: 100%;
+      box-sizing: border-box;
+      margin-bottom: 8px;
+      resize: vertical;
+    }
+    button {
+      width: 100%;
+      padding: 8px;
+      margin-bottom: 12px;
+      cursor: pointer;
+    }
+  </style>
+</head>
+<body>
+  <h3>Job Application Assistant</h3>
+  
+  <label for="summary"><b>Career Professional Summary:</b></label>
+  <textarea id="summary" rows="5" placeholder="Enter your career professional summary here..."></textarea>
+  <button id="saveSummary">Save Summary</button>
+  
+  <label for="jdDescription"><b>Job Description:</b></label>
+  <textarea id="jdDescription" rows="5" placeholder="Paste the job requirement JD here..."></textarea>
+  <button id="saveJD">Save JD Manually</button>
+  
+  <hr>
+  <button id="scanJD">Auto-Scan JD from Page</button>
+  
+  <div id="status" style="text-align: center; font-weight: bold; min-height: 20px;"></div>
+  
+  <script src="popup.js"></script>
+</body>
+</html>
