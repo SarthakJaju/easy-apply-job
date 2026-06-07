@@ -2,44 +2,274 @@
 <html>
 <head>
   <meta charset="UTF-8">
-  <title>Easy Apply Job</title>
+  <title>Easy Job Assistant</title>
+  <!-- Load Premium Typography -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@400;500;600;700&family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
   <style>
+    :root {
+      --bg-color: #f8fafc;
+      --card-bg: #ffffff;
+      --card-border: #e2e8f0;
+      --primary-color: #6366f1;
+      --primary-hover: #4f46e5;
+      --accent-color: #10b981;
+      --text-main: #0f172a;
+      --text-muted: #64748b;
+      --input-bg: #ffffff;
+      --input-border: #cbd5e1;
+      --transition-speed: 0.2s;
+    }
+
     body {
-      font-family: Arial, sans-serif;
-      width: 320px;
-      padding: 15px;
+      font-family: 'Outfit', sans-serif;
+      background-color: var(--bg-color);
+      color: var(--text-main);
+      width: 360px;
+      padding: 16px;
+      margin: 0;
+      box-sizing: border-box;
+      overflow-x: hidden;
+    }
+
+    .container {
+      display: flex;
+      flex-direction: column;
+      gap: 14px;
+    }
+
+    header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      border-bottom: 1px solid var(--card-border);
+      padding-bottom: 10px;
+    }
+
+    header h1 {
+      font-size: 16px;
+      font-weight: 700;
+      margin: 0;
+      letter-spacing: -0.01em;
+      color: var(--text-main);
+    }
+
+    .subtitle {
+      font-family: 'Inter', sans-serif;
+      font-size: 11px;
+      color: var(--text-muted);
       margin: 0;
     }
-    textarea {
-      width: 100%;
-      box-sizing: border-box;
-      margin-bottom: 8px;
-      resize: vertical;
+
+    .section-card {
+      background: var(--card-bg);
+      border: 1px solid var(--card-border);
+      border-radius: 8px;
+      padding: 12px;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      box-shadow: 0 1px 3px rgba(0, 0, 0, 0.05);
+      transition: all var(--transition-speed);
     }
-    button {
-      width: 100%;
+
+    .label-row {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+
+    label {
+      font-size: 11px;
+      font-weight: 600;
+      color: var(--text-muted);
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+    }
+
+    /* Minimalist status badge */
+    .sync-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      padding: 2px 8px;
+      border-radius: 12px;
+      font-size: 10px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.03em;
+      transition: all var(--transition-speed);
+    }
+
+    .sync-badge.synced {
+      background: rgba(16, 185, 129, 0.1);
+      color: #059669;
+      border: 1px solid rgba(16, 185, 129, 0.25);
+    }
+
+    .sync-badge.syncing {
+      background: rgba(234, 179, 8, 0.1);
+      color: #b45309;
+      border: 1px solid rgba(234, 179, 8, 0.25);
+    }
+
+    .sync-badge.unsynced {
+      background: rgba(239, 68, 68, 0.1);
+      color: #dc2626;
+      border: 1px solid rgba(239, 68, 68, 0.25);
+    }
+
+    textarea {
+      font-family: 'Inter', sans-serif;
+      font-size: 12px;
+      background: var(--input-bg);
+      border: 1px solid var(--input-border);
+      color: var(--text-main);
+      border-radius: 6px;
       padding: 8px;
-      margin-bottom: 12px;
+      resize: vertical;
+      box-sizing: border-box;
+      width: 100%;
+      outline: none;
+      transition: border-color var(--transition-speed);
+    }
+
+    textarea:focus {
+      border-color: var(--primary-color);
+    }
+
+    button {
+      font-family: 'Outfit', sans-serif;
+      font-size: 12px;
+      font-weight: 600;
+      color: white;
+      border: none;
+      border-radius: 6px;
+      padding: 8px 12px;
       cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 5px;
+      transition: background-color var(--transition-speed);
+    }
+
+    .btn-primary {
+      background-color: var(--primary-color);
+    }
+
+    .btn-primary:hover {
+      background-color: var(--primary-hover);
+    }
+
+    .btn-accent {
+      background-color: var(--accent-color);
+    }
+
+    .btn-accent:hover {
+      background-color: #059669;
+    }
+
+    .btn-outline {
+      background: transparent;
+      border: 1px solid var(--input-border);
+      color: var(--text-main);
+    }
+
+    .btn-outline:hover {
+      background: rgba(0, 0, 0, 0.02);
+      border-color: var(--text-muted);
+    }
+
+    .footer-actions {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 10px;
+    }
+
+    #status {
+      font-family: 'Inter', sans-serif;
+      font-size: 11px;
+      text-align: center;
+      min-height: 18px;
+      padding: 3px;
+      border-radius: 4px;
+    }
+
+    .text-success {
+      color: #059669;
+      background: rgba(16, 185, 129, 0.05);
+    }
+
+    .text-error {
+      color: #dc2626;
+      background: rgba(239, 68, 68, 0.05);
+    }
+
+    .text-info {
+      color: #2563eb;
+      background: rgba(59, 130, 246, 0.05);
     }
   </style>
 </head>
 <body>
-  <h3>Job Application Assistant</h3>
+  <div class="container">
+    <header>
+      <div>
+        <h1>Easy Job Assistant</h1>
+        <p class="subtitle">Local Vector Embeddings & RAG</p>
+      </div>
+      <!-- Minimal status check icon -->
+      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+        <rect x="2" y="4" width="20" height="16" rx="4" stroke="#6366f1" stroke-width="1.5"/>
+        <path d="M7 12L10 15L17 8" stroke="#10b981" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+      </svg>
+    </header>
+    
+    <!-- Profile Card -->
+    <div class="section-card">
+      <div class="label-row">
+        <label for="summary">Candidate Profile</label>
+        <span class="sync-badge unsynced" id="summary-badge">
+          <span class="badge-icon">✗</span>
+          <span class="badge-text">Unsynced</span>
+        </span>
+      </div>
+      <textarea id="summary" rows="4" placeholder="Paste your resume summary or professional description..."></textarea>
+      <button class="btn-primary" id="saveSummary">
+        Save & Embed Profile
+      </button>
+    </div>
+    
+    <!-- Job Description Card -->
+    <div class="section-card">
+      <div class="label-row">
+        <label for="jdDescription">Job Description</label>
+        <span class="sync-badge unsynced" id="jd-badge">
+          <span class="badge-icon">✗</span>
+          <span class="badge-text">Unsynced</span>
+        </span>
+      </div>
+      <textarea id="jdDescription" rows="4" placeholder="Paste target Job Description text here..."></textarea>
+      <button class="btn-primary" id="saveJD">
+        Save & Embed Job
+      </button>
+    </div>
+    
+    <!-- Footer Grid Actions -->
+    <div class="footer-actions">
+      <button class="btn-accent" id="scanJD">
+        Auto-Scan JD
+      </button>
+      <button class="btn-outline" id="openSidebar">
+        Open Q&A Panel
+      </button>
+    </div>
+    
+    <div id="status"></div>
+  </div>
   
-  <label for="summary"><b>Career Professional Summary:</b></label>
-  <textarea id="summary" rows="5" placeholder="Enter your career professional summary here..."></textarea>
-  <button id="saveSummary">Save Summary</button>
-  
-  <label for="jdDescription"><b>Job Description:</b></label>
-  <textarea id="jdDescription" rows="5" placeholder="Paste the job requirement JD here..."></textarea>
-  <button id="saveJD">Save JD Manually</button>
-  
-  <hr>
-  <button id="scanJD">Auto-Scan JD from Page</button>
-  
-  <div id="status" style="text-align: center; font-weight: bold; min-height: 20px;"></div>
-  
-  <script src="popup.js"></script>
+  <script src="dist/popup.js"></script>
 </body>
 </html>
