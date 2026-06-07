@@ -26,3 +26,11 @@ chrome.action.onClicked.addListener((tab) => {
     }
   });
 });
+
+// Respond to content script tab ID queries
+chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
+  if (request.action === "GET_TAB_ID") {
+    sendResponse({ tabId: sender.tab ? sender.tab.id : null });
+  }
+  return true;
+});

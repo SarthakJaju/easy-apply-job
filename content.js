@@ -7,6 +7,22 @@ const chromaClient = new ChromaClient();
 const embeddingEngine = new EmbeddingEngine();
 const splitter = new TextSplitter({ chunkSize: 350, chunkOverlap: 200 });
 
+let tabId = null;
+const tabIdPromise = new Promise((resolve) => {
+  if (typeof chrome !== 'undefined' && chrome.runtime && chrome.runtime.sendMessage) {
+    chrome.runtime.sendMessage({ action: "GET_TAB_ID" }, (response) => {
+      if (response && response.tabId) {
+        tabId = response.tabId;
+        resolve(response.tabId);
+      } else {
+        resolve(null);
+      }
+    });
+  } else {
+    resolve(null);
+  }
+});
+
 function isContextValid() {
   try {
     return !!(chrome && chrome.runtime && chrome.runtime.id);
@@ -45,8 +61,9 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
 /**
  * Injects and opens the sidepanel container inside the active web page context.
  */
-function injectAndOpenSidebar() {
+async function injectAndOpenSidebar() {
   if (checkAndShowContextInvalid()) return;
+  await tabIdPromise;
   // Inject Outfit & Inter fonts from Google Fonts if not present
   if (!document.getElementById('easy-apply-fonts-pre')) {
     const preconnect1 = document.createElement('link');
@@ -317,12 +334,12 @@ function injectAndOpenSidebar() {
     document.getElementById('easy-apply-generate-btn').addEventListener('click', handleQuestionSubmit);
 
     // Load existing summary and JD text from storage
-    chrome.storage.local.get(['careerSummary', 'lastScannedJD'], (result) => {
+    chrome.storage.local.get(['careerSummary', `lastScannedJD_tab_${tabId}`], (result) => {
       if (result.careerSummary) {
         document.getElementById('sb-profile-text').value = result.careerSummary;
       }
-      if (result.lastScannedJD) {
-        document.getElementById('sb-jd-text').value = result.lastScannedJD;
+      if (result[`lastScannedJD_tab_${tabId}`]) {
+        document.getElementById('sb-jd-text').value = result[`lastScannedJD_tab_${tabId}`];
       }
     });
 
@@ -350,9 +367,9 @@ function injectAndOpenSidebar() {
         try {
           const chunks = splitter.splitText(summaryText);
           const embeddings = await embeddingEngine.getEmbeddings(chunks);
+          // Delete old collection first to ensure only 1 Profile is stored
+          await chromaClient.deleteCollection("candidate_profile");
           const collection = await chromaClient.createCollection("candidate_profile");
-          
-          await collection.delete({ ids: collection.data.ids });
           
           const ids = chunks.map((_, idx) => `summary_chunk_${idx}`);
           const metadatas = chunks.map(() => ({ type: "summary" }));
@@ -391,13 +408,16 @@ function injectAndOpenSidebar() {
       }
       showStatus("Vectorizing Job Description. Please wait...", "info");
 
-      chrome.storage.local.set({ lastScannedJD: jdText }, async () => {
+      const jdStorageKey = `lastScannedJD_tab_${tabId}`;
+      chrome.storage.local.set({ [jdStorageKey]: jdText }, async () => {
         try {
           const chunks = splitter.splitText(jdText);
           const embeddings = await embeddingEngine.getEmbeddings(chunks);
-          const collection = await chromaClient.createCollection("job_description");
           
-          await collection.delete({ ids: collection.data.ids });
+          const jdCollectionName = `job_description_tab_${tabId}`;
+          // Delete old collection first to ensure only 1 JD is stored
+          await chromaClient.deleteCollection(jdCollectionName);
+          const collection = await chromaClient.createCollection(jdCollectionName);
           
           const ids = chunks.map((_, idx) => `jd_chunk_${idx}`);
           const metadatas = chunks.map(() => ({ type: "jd" }));
@@ -478,7 +498,7 @@ async function loadAndRenderReport() {
 
   try {
     const summaryColl = await chromaClient.getCollection("candidate_profile");
-    const jdColl = await chromaClient.getCollection("job_description");
+    const jdColl = await chromaClient.getCollection(`job_description_tab_${tabId}`);
 
     const summary = summaryColl.data || {};
     const jd = jdColl.data || {};
@@ -647,7 +667,7 @@ async function handleQuestionSubmit() {
     const queryEmbedding = await embeddingEngine.getEmbedding(question);
     
     const summaryColl = await chromaClient.getCollection("candidate_profile");
-    const jdColl = await chromaClient.getCollection("job_description");
+    const jdColl = await chromaClient.getCollection(`job_description_tab_${tabId}`);
 
     const summaryResults = await summaryColl.query({
       queryEmbeddings: [queryEmbedding],
@@ -730,8 +750,8 @@ function scanAndHighlightJD() {
     target.scrollIntoView({ behavior: 'smooth', block: 'center' });
 
     const text = target.innerText;
-    // Save to storage
-    chrome.storage.local.set({ lastScannedJD: text });
+    const jdStorageKey = `lastScannedJD_tab_${tabId}`;
+    chrome.storage.local.set({ [jdStorageKey]: text });
     
     return { success: true, text: text };
   }

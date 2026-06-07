@@ -33680,6 +33680,21 @@ ${fake_token_around_image}${global_img_token}` + image_token.repeat(image_seq_le
   var chromaClient = new ChromaClient();
   var embeddingEngine = new EmbeddingEngine();
   var splitter = new TextSplitter({ chunkSize: 350, chunkOverlap: 200 });
+  var tabId = null;
+  var tabIdPromise = new Promise((resolve) => {
+    if (typeof chrome !== "undefined" && chrome.runtime && chrome.runtime.sendMessage) {
+      chrome.runtime.sendMessage({ action: "GET_TAB_ID" }, (response) => {
+        if (response && response.tabId) {
+          tabId = response.tabId;
+          resolve(response.tabId);
+        } else {
+          resolve(null);
+        }
+      });
+    } else {
+      resolve(null);
+    }
+  });
   function isContextValid() {
     try {
       return !!(chrome && chrome.runtime && chrome.runtime.id);
@@ -33711,8 +33726,9 @@ ${fake_token_around_image}${global_img_token}` + image_token.repeat(image_seq_le
     }
     return true;
   });
-  function injectAndOpenSidebar() {
+  async function injectAndOpenSidebar() {
     if (checkAndShowContextInvalid()) return;
+    await tabIdPromise;
     if (!document.getElementById("easy-apply-fonts-pre")) {
       const preconnect1 = document.createElement("link");
       preconnect1.rel = "preconnect";
@@ -33944,12 +33960,12 @@ ${fake_token_around_image}${global_img_token}` + image_token.repeat(image_seq_le
         });
       });
       document.getElementById("easy-apply-generate-btn").addEventListener("click", handleQuestionSubmit);
-      chrome.storage.local.get(["careerSummary", "lastScannedJD"], (result) => {
+      chrome.storage.local.get(["careerSummary", `lastScannedJD_tab_${tabId}`], (result) => {
         if (result.careerSummary) {
           document.getElementById("sb-profile-text").value = result.careerSummary;
         }
-        if (result.lastScannedJD) {
-          document.getElementById("sb-jd-text").value = result.lastScannedJD;
+        if (result[`lastScannedJD_tab_${tabId}`]) {
+          document.getElementById("sb-jd-text").value = result[`lastScannedJD_tab_${tabId}`];
         }
       });
       document.getElementById("sb-profile-save-btn").addEventListener("click", async () => {
@@ -33972,8 +33988,8 @@ ${fake_token_around_image}${global_img_token}` + image_token.repeat(image_seq_le
           try {
             const chunks = splitter.splitText(summaryText);
             const embeddings = await embeddingEngine.getEmbeddings(chunks);
+            await chromaClient.deleteCollection("candidate_profile");
             const collection = await chromaClient.createCollection("candidate_profile");
-            await collection.delete({ ids: collection.data.ids });
             const ids = chunks.map((_, idx) => `summary_chunk_${idx}`);
             const metadatas = chunks.map(() => ({ type: "summary" }));
             await collection.add({ ids, embeddings, documents: chunks, metadatas });
@@ -34004,12 +34020,14 @@ ${fake_token_around_image}${global_img_token}` + image_token.repeat(image_seq_le
           jdBadge.querySelector(".badge-icon").innerText = "\u{1F504}";
         }
         showStatus("Vectorizing Job Description. Please wait...", "info");
-        chrome.storage.local.set({ lastScannedJD: jdText }, async () => {
+        const jdStorageKey = `lastScannedJD_tab_${tabId}`;
+        chrome.storage.local.set({ [jdStorageKey]: jdText }, async () => {
           try {
             const chunks = splitter.splitText(jdText);
             const embeddings = await embeddingEngine.getEmbeddings(chunks);
-            const collection = await chromaClient.createCollection("job_description");
-            await collection.delete({ ids: collection.data.ids });
+            const jdCollectionName = `job_description_tab_${tabId}`;
+            await chromaClient.deleteCollection(jdCollectionName);
+            const collection = await chromaClient.createCollection(jdCollectionName);
             const ids = chunks.map((_, idx) => `jd_chunk_${idx}`);
             const metadatas = chunks.map(() => ({ type: "jd" }));
             await collection.add({ ids, embeddings, documents: chunks, metadatas });
@@ -34074,7 +34092,7 @@ ${fake_token_around_image}${global_img_token}` + image_token.repeat(image_seq_le
     section.style.display = "none";
     try {
       const summaryColl = await chromaClient.getCollection("candidate_profile");
-      const jdColl = await chromaClient.getCollection("job_description");
+      const jdColl = await chromaClient.getCollection(`job_description_tab_${tabId}`);
       const summary = summaryColl.data || {};
       const jd = jdColl.data || {};
       const profileBadge = document.getElementById("sb-profile-badge");
@@ -34193,7 +34211,7 @@ ${fake_token_around_image}${global_img_token}` + image_token.repeat(image_seq_le
     try {
       const queryEmbedding = await embeddingEngine.getEmbedding(question);
       const summaryColl = await chromaClient.getCollection("candidate_profile");
-      const jdColl = await chromaClient.getCollection("job_description");
+      const jdColl = await chromaClient.getCollection(`job_description_tab_${tabId}`);
       const summaryResults = await summaryColl.query({
         queryEmbeddings: [queryEmbedding],
         nResults: 3
@@ -34269,7 +34287,8 @@ ${fake_token_around_image}${global_img_token}` + image_token.repeat(image_seq_le
       target.style.borderRadius = "4px";
       target.scrollIntoView({ behavior: "smooth", block: "center" });
       const text = target.innerText;
-      chrome.storage.local.set({ lastScannedJD: text });
+      const jdStorageKey = `lastScannedJD_tab_${tabId}`;
+      chrome.storage.local.set({ [jdStorageKey]: text });
       return { success: true, text };
     }
     return { success: false };
