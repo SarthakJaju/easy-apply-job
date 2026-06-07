@@ -8,6 +8,9 @@ const embeddingEngine = new EmbeddingEngine();
 const splitter = new TextSplitter({ chunkSize: 350, chunkOverlap: 200 });
 
 let tabId = null;
+let isSyncingProfile = false;
+let isSyncingJD = false;
+
 const tabIdPromise = new Promise((resolve) => {
   if (typeof chrome !== 'undefined' && chrome.runtime && chrome.runtime.sendMessage) {
     chrome.runtime.sendMessage({ action: "GET_TAB_ID" }, (response) => {
@@ -129,7 +132,7 @@ async function injectAndOpenSidebar() {
               </span>
               <span class="sb-accordion-arrow">&#9662;</span>
             </div>
-            <div class="sb-accordion-body" style="display: flex; flex-direction: column; gap: 8px;">
+            <div class="sb-accordion-body">
               <textarea id="sb-profile-text" rows="10" placeholder="Paste your resume summary or professional description..."></textarea>
               <button id="sb-profile-save-btn" class="easy-apply-btn">Save & Embed Profile</button>
             </div>
@@ -143,7 +146,7 @@ async function injectAndOpenSidebar() {
               </span>
               <span class="sb-accordion-arrow">&#9662;</span>
             </div>
-            <div class="sb-accordion-body" style="display: flex; flex-direction: column; gap: 8px;">
+            <div class="sb-accordion-body">
               <textarea id="sb-jd-text" rows="10" placeholder="Paste target Job Description text..."></textarea>
               <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 8px;">
                 <button id="sb-jd-scan-btn" class="easy-apply-btn secondary">Auto-Scan JD</button>
@@ -160,7 +163,7 @@ async function injectAndOpenSidebar() {
               </span>
               <span class="sb-accordion-arrow">&#9662;</span>
             </div>
-            <div class="sb-accordion-body" style="display: flex; flex-direction: column; gap: 8px;">
+            <div class="sb-accordion-body">
               <div id="sb-loader" class="sb-loader-container">
                 <div class="sb-spinner"></div>
                 <span class="sb-loader-text">Analyzing job alignment...</span>
@@ -177,13 +180,45 @@ async function injectAndOpenSidebar() {
                     <span class="score-desc" id="sb-score-desc">Verifying profile matches.</span>
                   </div>
                 </div>
-                <div>
-                  <div style="font-weight: 600; font-size: 10px; margin-bottom: 4px; color: var(--sb-text-muted);">CORE STRENGTHS:</div>
-                  <ul class="sb-list highlights" id="sb-highlights-list"></ul>
+                <!-- Sub-accordions in Alignment Analytics -->
+                <div class="sub-accordion active" id="sub-acc-summary">
+                  <div class="sub-accordion-header">
+                    <span>Summary</span>
+                    <span class="sub-accordion-arrow">&#9662;</span>
+                  </div>
+                  <div class="sub-accordion-body" id="sb-summary-text">
+                    Loading summary...
+                  </div>
                 </div>
-                <div>
-                  <div style="font-weight: 600; font-size: 10px; margin-bottom: 4px; color: var(--sb-text-muted);">RECOMMENDED OPTIMIZATIONS:</div>
-                  <ul class="sb-list suggestions" id="sb-suggestions-list"></ul>
+
+                <div class="sub-accordion" id="sub-acc-matches">
+                  <div class="sub-accordion-header">
+                    <span>What Matches</span>
+                    <span class="sub-accordion-arrow">&#9662;</span>
+                  </div>
+                  <div class="sub-accordion-body">
+                    <ul class="sb-list matches-list green-text" id="sb-matches-list"></ul>
+                  </div>
+                </div>
+
+                <div class="sub-accordion" id="sub-acc-gaps">
+                  <div class="sub-accordion-header">
+                    <span>What Does Not Match</span>
+                    <span class="sub-accordion-arrow">&#9662;</span>
+                  </div>
+                  <div class="sub-accordion-body">
+                    <ul class="sb-list non-matches-list red-text" id="sb-non-matches-list"></ul>
+                  </div>
+                </div>
+
+                <div class="sub-accordion" id="sub-acc-strengths">
+                  <div class="sub-accordion-header">
+                    <span>Core Strengths</span>
+                    <span class="sub-accordion-arrow">&#9662;</span>
+                  </div>
+                  <div class="sub-accordion-body">
+                    <ul class="sb-list strengths-list" id="sb-strengths-list"></ul>
+                  </div>
                 </div>
               </div>
             </div>
@@ -197,7 +232,7 @@ async function injectAndOpenSidebar() {
               </span>
               <span class="sb-accordion-arrow">&#9662;</span>
             </div>
-            <div class="sb-accordion-body" style="display: flex; flex-direction: column; gap: 8px;">
+            <div class="sb-accordion-body">
               <input type="text" id="easy-apply-question" placeholder="Ask question based on JD & Resume..." />
               <button id="easy-apply-generate-btn" class="easy-apply-btn">Submit Question</button>
               <textarea id="easy-apply-answer" placeholder="Answers will compile here..." readonly style="margin-top: 4px; min-height: 80px;"></textarea>
@@ -309,6 +344,7 @@ async function injectAndOpenSidebar() {
       container.style.width = `${newWidth}px`;
     }
 
+    // Resizing logic completion
     function onResizeUp() {
       isResizing = false;
       resizeHandle.classList.remove('active');
@@ -330,28 +366,59 @@ async function injectAndOpenSidebar() {
       });
     });
 
+    // Sub-accordions expand/collapse handlers
+    const subAccordions = container.querySelectorAll('.sub-accordion');
+    subAccordions.forEach(subAcc => {
+      const subHeader = subAcc.querySelector('.sub-accordion-header');
+      subHeader.addEventListener('click', (e) => {
+        e.stopPropagation();
+        const isActive = subAcc.classList.contains('active');
+        subAccordions.forEach(sa => sa.classList.remove('active'));
+        if (!isActive) {
+          subAcc.classList.add('active');
+        }
+      });
+    });
+
     // Submit Question handler
     document.getElementById('easy-apply-generate-btn').addEventListener('click', handleQuestionSubmit);
 
     const profileText = document.getElementById('sb-profile-text');
     const jdText = document.getElementById('sb-jd-text');
 
-    if (profileText) {
-      profileText.addEventListener('input', () => adjustTextareaHeight(profileText));
-    }
+    // Debounced JD updates
+    let jdDebounceTimeout = null;
     if (jdText) {
-      jdText.addEventListener('input', () => adjustTextareaHeight(jdText));
+      jdText.addEventListener('input', () => {
+        if (jdDebounceTimeout) {
+          clearTimeout(jdDebounceTimeout);
+        }
+        jdDebounceTimeout = setTimeout(async () => {
+          const text = jdText.value.trim();
+          if (text) {
+            handleEmbedJD(text);
+          } else {
+            const jdStorageKey = `lastScannedJD_tab_${tabId}`;
+            const jdCollectionName = `job_description_tab_${tabId}`;
+            chrome.storage.local.remove([jdStorageKey]);
+            try {
+              await chromaClient.deleteCollection(jdCollectionName);
+            } catch (err) {
+              console.warn("Error deleting collection:", err);
+            }
+            loadAndRenderReport();
+          }
+        }, 1500);
+      });
     }
 
     // Load existing summary and JD text from storage
     chrome.storage.local.get(['careerSummary', `lastScannedJD_tab_${tabId}`], (result) => {
       if (result.careerSummary && profileText) {
         profileText.value = result.careerSummary;
-        adjustTextareaHeight(profileText);
       }
       if (result[`lastScannedJD_tab_${tabId}`] && jdText) {
         jdText.value = result[`lastScannedJD_tab_${tabId}`];
-        adjustTextareaHeight(jdText);
       }
     });
 
@@ -362,6 +429,7 @@ async function injectAndOpenSidebar() {
         showStatus("Please enter summary text first.", "error");
         return;
       }
+      isSyncingProfile = true;
       const btn = document.getElementById('sb-profile-save-btn');
       const originalText = btn.innerText;
       btn.innerText = "Syncing with ChromaDB...";
@@ -391,11 +459,13 @@ async function injectAndOpenSidebar() {
           btn.innerText = originalText;
           btn.disabled = false;
           showStatus(`✓ Profile synced successfully! (${chunks.length} vectors created)`, "success");
+          isSyncingProfile = false;
           loadAndRenderReport();
         } catch (err) {
           console.error(err);
           btn.innerText = "Failed to sync profile";
           btn.disabled = false;
+          isSyncingProfile = false;
           if (profileBadge) {
             profileBadge.className = "sb-status-badge missing";
             profileBadge.querySelector('.badge-icon').innerText = "✗";
@@ -405,8 +475,13 @@ async function injectAndOpenSidebar() {
       });
     });
 
-    // Save & Embed Job Description
+    // Save & Embed Job Description helper
     const handleEmbedJD = async (jdText) => {
+      isSyncingJD = true;
+      if (jdDebounceTimeout) {
+        clearTimeout(jdDebounceTimeout);
+        jdDebounceTimeout = null;
+      }
       const btn = document.getElementById('sb-jd-save-btn');
       const originalText = btn.innerText;
       btn.innerText = "Syncing...";
@@ -439,11 +514,13 @@ async function injectAndOpenSidebar() {
           btn.innerText = originalText;
           btn.disabled = false;
           showStatus(`✓ JD synced successfully! (${chunks.length} vectors created)`, "success");
+          isSyncingJD = false;
           loadAndRenderReport();
         } catch (err) {
           console.error(err);
           btn.innerText = "Failed to sync JD";
           btn.disabled = false;
+          isSyncingJD = false;
           if (jdBadge) {
             jdBadge.className = "sb-status-badge missing";
             jdBadge.querySelector('.badge-icon').innerText = "✗";
@@ -470,7 +547,6 @@ async function injectAndOpenSidebar() {
         const jdField = document.getElementById('sb-jd-text');
         if (jdField) {
           jdField.value = result.text;
-          adjustTextareaHeight(jdField);
         }
         showStatus("✓ Job description scanned! Vectorizing...", "success");
         handleEmbedJD(result.text); // Automatically save and embed!
@@ -498,6 +574,21 @@ async function loadAndRenderReport() {
   const loader = document.getElementById('sb-loader');
   const section = document.getElementById('sb-analysis-section');
   
+  if (isSyncingProfile || isSyncingJD) {
+    if (loader) loader.style.display = 'flex';
+    if (section) section.style.display = 'none';
+    const loaderText = document.querySelector('.sb-loader-text');
+    if (loaderText) {
+      loaderText.innerText = isSyncingProfile ? "Vectorizing Candidate Profile. Please wait..." : "Vectorizing Job Description. Please wait...";
+      loaderText.style.color = 'var(--sb-text-muted)';
+    }
+    const spinner = document.querySelector('.sb-spinner');
+    if (spinner) {
+      spinner.style.display = 'block';
+    }
+    return;
+  }
+
   // Reset loader/spinner visibility and style states in case of previous errors
   const loaderText = document.querySelector('.sb-loader-text');
   if (loaderText) {
@@ -586,16 +677,6 @@ function showStatus(msg, type) {
 }
 
 /**
- * Helper to adjust textarea height dynamically matching its scrollHeight (auto-grow).
- * @param {HTMLTextAreaElement} textarea 
- */
-function adjustTextareaHeight(textarea) {
-  if (!textarea) return;
-  textarea.style.height = 'auto';
-  textarea.style.height = textarea.scrollHeight + 'px';
-}
-
-/**
  * Displays error states in the sidebar.
  * @param {string} msg 
  */
@@ -627,8 +708,10 @@ function renderReportData(report) {
   const scoreLabel = document.getElementById('sb-score-label');
   const scoreDesc = document.getElementById('sb-score-desc');
   
-  const highlightsList = document.getElementById('sb-highlights-list');
-  const suggestionsList = document.getElementById('sb-suggestions-list');
+  const summaryText = document.getElementById('sb-summary-text');
+  const matchesList = document.getElementById('sb-matches-list');
+  const nonMatchesList = document.getElementById('sb-non-matches-list');
+  const strengthsList = document.getElementById('sb-strengths-list');
 
   const score = report.score || 0;
   scoreText.textContent = `${score}%`;
@@ -656,20 +739,41 @@ function renderReportData(report) {
   scoreLabel.style.color = color;
   scoreDesc.textContent = descText;
 
-  // Clear and update lists
-  highlightsList.innerHTML = '';
-  report.matches.forEach(m => {
-    const li = document.createElement('li');
-    li.innerText = m;
-    highlightsList.appendChild(li);
-  });
+  // Set summary text
+  if (summaryText) {
+    summaryText.innerText = report.summary || '';
+  }
 
-  suggestionsList.innerHTML = '';
-  report.suggestions.forEach(s => {
-    const li = document.createElement('li');
-    li.innerText = s;
-    suggestionsList.appendChild(li);
-  });
+  // Clear and update lists
+  if (matchesList) {
+    matchesList.innerHTML = '';
+    const matches = report.matches || [];
+    matches.forEach(m => {
+      const li = document.createElement('li');
+      li.innerText = m;
+      matchesList.appendChild(li);
+    });
+  }
+
+  if (nonMatchesList) {
+    nonMatchesList.innerHTML = '';
+    const nonMatches = report.nonMatches || report.suggestions || [];
+    nonMatches.forEach(s => {
+      const li = document.createElement('li');
+      li.innerText = s;
+      nonMatchesList.appendChild(li);
+    });
+  }
+
+  if (strengthsList) {
+    strengthsList.innerHTML = '';
+    const strengths = report.strengths || [];
+    strengths.forEach(st => {
+      const li = document.createElement('li');
+      li.innerText = st;
+      strengthsList.appendChild(li);
+    });
+  }
 }
 
 /**
