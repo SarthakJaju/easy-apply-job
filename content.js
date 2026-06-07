@@ -7,6 +7,29 @@ const chromaClient = new ChromaClient();
 const embeddingEngine = new EmbeddingEngine();
 const splitter = new TextSplitter({ chunkSize: 350, chunkOverlap: 200 });
 
+function isContextValid() {
+  try {
+    return !!(chrome && chrome.runtime && chrome.runtime.id);
+  } catch (e) {
+    return false;
+  }
+}
+
+function checkAndShowContextInvalid() {
+  if (!isContextValid()) {
+    const alertDiv = document.getElementById('sb-status-alert');
+    if (alertDiv) {
+      alertDiv.innerText = "Extension updated. Please refresh the page to continue.";
+      alertDiv.className = "error";
+      alertDiv.style.display = 'block';
+    } else {
+      alert("Extension updated. Please refresh the page to continue.");
+    }
+    return true;
+  }
+  return false;
+}
+
 // Listen for messages from popup
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   if (request.action === "SCAN_JD") {
@@ -23,6 +46,7 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
  * Injects and opens the sidepanel container inside the active web page context.
  */
 function injectAndOpenSidebar() {
+  if (checkAndShowContextInvalid()) return;
   // Inject Outfit & Inter fonts from Google Fonts if not present
   if (!document.getElementById('easy-apply-fonts-pre')) {
     const preconnect1 = document.createElement('link');
@@ -434,6 +458,7 @@ function injectAndOpenSidebar() {
  * Loads text chunks from vector DB background context and renders the match report.
  */
 async function loadAndRenderReport() {
+  if (checkAndShowContextInvalid()) return;
   const loader = document.getElementById('sb-loader');
   const section = document.getElementById('sb-analysis-section');
   
@@ -490,7 +515,11 @@ async function loadAndRenderReport() {
     renderReportData(report);
   } catch (e) {
     console.error(e);
-    showErrorState("Failed to compile matching report.");
+    if (e.message && e.message.includes("context invalidated")) {
+      showErrorState("Extension context invalidated. Please refresh this page to reload the assistant.");
+    } else {
+      showErrorState("Failed to compile matching report.");
+    }
   }
 }
 
@@ -630,15 +659,13 @@ async function handleQuestionSubmit() {
       nResults: 3
     });
 
-    const relevantChunks = [
-      ...(summaryResults.documents || []),
-      ...(jdResults.documents || [])
-    ];
+    const profileChunks = summaryResults.documents || [];
+    const jdChunks = jdResults.documents || [];
 
     answerBox.value = "Generating answer using local RAG...";
     showStatus("Synthesizing answer...", "info");
     
-    const answer = await ragService.generateAnswer(question, relevantChunks);
+    const answer = await ragService.generateAnswer(question, profileChunks, jdChunks);
     answerBox.value = answer;
     showStatus("Answer compiled!", "success");
   } catch (e) {
