@@ -2,15 +2,18 @@
   "manifest_version": 3,
   "name": "easy-job-assist",
   "version": "1.0",
-  "description": "Assist with job applications by scanning JDs and providing career summaries.",
+  "description": "Assist with job applications by scanning JDs and providing career summaries using local RAG.",
   "permissions": ["storage", "activeTab", "scripting"],
   "host_permissions": [
     "*://*.linkedin.com/*",
     "*://*.naukri.com/*",
     "https://*.myworkdayjobs.com/*"
   ],
+  "background": {
+    "service_worker": "dist/background.js",
+    "type": "module"
+  },
   "action": {
-    "default_popup": "popup.html"
   },
   "options_page": "options.html",
   "content_scripts": [
@@ -20,8 +23,17 @@
         "*://*.naukri.com/*",
         "https://*.myworkdayjobs.com/*"
       ],
-      "js": ["content.js"],
+      "js": ["dist/content.js"],
       "css": ["content.css"]
+    }
+  ],
+  "content_security_policy": {
+    "extension_pages": "script-src 'self' 'wasm-unsafe-eval'; object-src 'self';"
+  },
+  "web_accessible_resources": [
+    {
+      "resources": ["dist/ort-wasm-*"],
+      "matches": ["<all_urls>"]
     }
   ]
 }
