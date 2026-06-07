@@ -130,7 +130,7 @@ async function injectAndOpenSidebar() {
               <span class="sb-accordion-arrow">&#9662;</span>
             </div>
             <div class="sb-accordion-body" style="display: flex; flex-direction: column; gap: 8px;">
-              <textarea id="sb-profile-text" rows="4" placeholder="Paste your resume summary or professional description..."></textarea>
+              <textarea id="sb-profile-text" rows="10" placeholder="Paste your resume summary or professional description..."></textarea>
               <button id="sb-profile-save-btn" class="easy-apply-btn">Save & Embed Profile</button>
             </div>
           </div>
@@ -144,7 +144,7 @@ async function injectAndOpenSidebar() {
               <span class="sb-accordion-arrow">&#9662;</span>
             </div>
             <div class="sb-accordion-body" style="display: flex; flex-direction: column; gap: 8px;">
-              <textarea id="sb-jd-text" rows="4" placeholder="Paste target Job Description text..."></textarea>
+              <textarea id="sb-jd-text" rows="10" placeholder="Paste target Job Description text..."></textarea>
               <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 8px;">
                 <button id="sb-jd-scan-btn" class="easy-apply-btn secondary">Auto-Scan JD</button>
                 <button id="sb-jd-save-btn" class="easy-apply-btn">Save & Embed JD</button>
@@ -333,13 +333,25 @@ async function injectAndOpenSidebar() {
     // Submit Question handler
     document.getElementById('easy-apply-generate-btn').addEventListener('click', handleQuestionSubmit);
 
+    const profileText = document.getElementById('sb-profile-text');
+    const jdText = document.getElementById('sb-jd-text');
+
+    if (profileText) {
+      profileText.addEventListener('input', () => adjustTextareaHeight(profileText));
+    }
+    if (jdText) {
+      jdText.addEventListener('input', () => adjustTextareaHeight(jdText));
+    }
+
     // Load existing summary and JD text from storage
     chrome.storage.local.get(['careerSummary', `lastScannedJD_tab_${tabId}`], (result) => {
-      if (result.careerSummary) {
-        document.getElementById('sb-profile-text').value = result.careerSummary;
+      if (result.careerSummary && profileText) {
+        profileText.value = result.careerSummary;
+        adjustTextareaHeight(profileText);
       }
-      if (result[`lastScannedJD_tab_${tabId}`]) {
-        document.getElementById('sb-jd-text').value = result[`lastScannedJD_tab_${tabId}`];
+      if (result[`lastScannedJD_tab_${tabId}`] && jdText) {
+        jdText.value = result[`lastScannedJD_tab_${tabId}`];
+        adjustTextareaHeight(jdText);
       }
     });
 
@@ -455,7 +467,11 @@ async function injectAndOpenSidebar() {
       showStatus("Scanning job web page details...", "info");
       const result = scanAndHighlightJD();
       if (result.success) {
-        document.getElementById('sb-jd-text').value = result.text;
+        const jdField = document.getElementById('sb-jd-text');
+        if (jdField) {
+          jdField.value = result.text;
+          adjustTextareaHeight(jdField);
+        }
         showStatus("✓ Job description scanned! Vectorizing...", "success");
         handleEmbedJD(result.text); // Automatically save and embed!
       } else {
@@ -567,6 +583,16 @@ function showStatus(msg, type) {
     alertDiv.innerText = "";
     alertDiv.className = "";
   }, 4500);
+}
+
+/**
+ * Helper to adjust textarea height dynamically matching its scrollHeight (auto-grow).
+ * @param {HTMLTextAreaElement} textarea 
+ */
+function adjustTextareaHeight(textarea) {
+  if (!textarea) return;
+  textarea.style.height = 'auto';
+  textarea.style.height = textarea.scrollHeight + 'px';
 }
 
 /**

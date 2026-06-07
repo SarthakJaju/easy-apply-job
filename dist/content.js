@@ -33835,7 +33835,7 @@ ${fake_token_around_image}${global_img_token}` + image_token.repeat(image_seq_le
               <span class="sb-accordion-arrow">&#9662;</span>
             </div>
             <div class="sb-accordion-body" style="display: flex; flex-direction: column; gap: 8px;">
-              <textarea id="sb-profile-text" rows="4" placeholder="Paste your resume summary or professional description..."></textarea>
+              <textarea id="sb-profile-text" rows="10" placeholder="Paste your resume summary or professional description..."></textarea>
               <button id="sb-profile-save-btn" class="easy-apply-btn">Save & Embed Profile</button>
             </div>
           </div>
@@ -33849,7 +33849,7 @@ ${fake_token_around_image}${global_img_token}` + image_token.repeat(image_seq_le
               <span class="sb-accordion-arrow">&#9662;</span>
             </div>
             <div class="sb-accordion-body" style="display: flex; flex-direction: column; gap: 8px;">
-              <textarea id="sb-jd-text" rows="4" placeholder="Paste target Job Description text..."></textarea>
+              <textarea id="sb-jd-text" rows="10" placeholder="Paste target Job Description text..."></textarea>
               <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 8px;">
                 <button id="sb-jd-scan-btn" class="easy-apply-btn secondary">Auto-Scan JD</button>
                 <button id="sb-jd-save-btn" class="easy-apply-btn">Save & Embed JD</button>
@@ -33960,12 +33960,22 @@ ${fake_token_around_image}${global_img_token}` + image_token.repeat(image_seq_le
         });
       });
       document.getElementById("easy-apply-generate-btn").addEventListener("click", handleQuestionSubmit);
+      const profileText = document.getElementById("sb-profile-text");
+      const jdText = document.getElementById("sb-jd-text");
+      if (profileText) {
+        profileText.addEventListener("input", () => adjustTextareaHeight(profileText));
+      }
+      if (jdText) {
+        jdText.addEventListener("input", () => adjustTextareaHeight(jdText));
+      }
       chrome.storage.local.get(["careerSummary", `lastScannedJD_tab_${tabId}`], (result) => {
-        if (result.careerSummary) {
-          document.getElementById("sb-profile-text").value = result.careerSummary;
+        if (result.careerSummary && profileText) {
+          profileText.value = result.careerSummary;
+          adjustTextareaHeight(profileText);
         }
-        if (result[`lastScannedJD_tab_${tabId}`]) {
-          document.getElementById("sb-jd-text").value = result[`lastScannedJD_tab_${tabId}`];
+        if (result[`lastScannedJD_tab_${tabId}`] && jdText) {
+          jdText.value = result[`lastScannedJD_tab_${tabId}`];
+          adjustTextareaHeight(jdText);
         }
       });
       document.getElementById("sb-profile-save-btn").addEventListener("click", async () => {
@@ -34009,7 +34019,7 @@ ${fake_token_around_image}${global_img_token}` + image_token.repeat(image_seq_le
           }
         });
       });
-      const handleEmbedJD = async (jdText) => {
+      const handleEmbedJD = async (jdText2) => {
         const btn = document.getElementById("sb-jd-save-btn");
         const originalText = btn.innerText;
         btn.innerText = "Syncing...";
@@ -34021,9 +34031,9 @@ ${fake_token_around_image}${global_img_token}` + image_token.repeat(image_seq_le
         }
         showStatus("Vectorizing Job Description. Please wait...", "info");
         const jdStorageKey = `lastScannedJD_tab_${tabId}`;
-        chrome.storage.local.set({ [jdStorageKey]: jdText }, async () => {
+        chrome.storage.local.set({ [jdStorageKey]: jdText2 }, async () => {
           try {
-            const chunks = splitter.splitText(jdText);
+            const chunks = splitter.splitText(jdText2);
             const embeddings = await embeddingEngine.getEmbeddings(chunks);
             const jdCollectionName = `job_description_tab_${tabId}`;
             await chromaClient.deleteCollection(jdCollectionName);
@@ -34048,18 +34058,22 @@ ${fake_token_around_image}${global_img_token}` + image_token.repeat(image_seq_le
         });
       };
       document.getElementById("sb-jd-save-btn").addEventListener("click", () => {
-        const jdText = document.getElementById("sb-jd-text").value.trim();
-        if (!jdText) {
+        const jdText2 = document.getElementById("sb-jd-text").value.trim();
+        if (!jdText2) {
           showStatus("Please paste a Job Description first.", "error");
           return;
         }
-        handleEmbedJD(jdText);
+        handleEmbedJD(jdText2);
       });
       document.getElementById("sb-jd-scan-btn").addEventListener("click", () => {
         showStatus("Scanning job web page details...", "info");
         const result = scanAndHighlightJD();
         if (result.success) {
-          document.getElementById("sb-jd-text").value = result.text;
+          const jdField = document.getElementById("sb-jd-text");
+          if (jdField) {
+            jdField.value = result.text;
+            adjustTextareaHeight(jdField);
+          }
           showStatus("\u2713 Job description scanned! Vectorizing...", "success");
           handleEmbedJD(result.text);
         } else {
@@ -34142,6 +34156,11 @@ ${fake_token_around_image}${global_img_token}` + image_token.repeat(image_seq_le
       alertDiv.innerText = "";
       alertDiv.className = "";
     }, 4500);
+  }
+  function adjustTextareaHeight(textarea) {
+    if (!textarea) return;
+    textarea.style.height = "auto";
+    textarea.style.height = textarea.scrollHeight + "px";
   }
   function showErrorState(msg) {
     const loaderText = document.querySelector(".sb-loader-text");
