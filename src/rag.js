@@ -20,10 +20,11 @@ class RAGStrategy {
   /**
    * Generates an answer to a question using the retrieved context.
    * @param {string} question 
-   * @param {string[]} relevantChunks 
+   * @param {string[]} profileChunks 
+   * @param {string[]} jdChunks 
    * @returns {Promise<string>} Generated text response
    */
-  async generateAnswer(question, relevantChunks) {
+  async generateAnswer(question, profileChunks, jdChunks) {
     throw new Error("generateAnswer must be implemented by strategy subclasses.");
   }
 }
@@ -84,24 +85,28 @@ Provide a JSON report. Return ONLY a valid JSON object matching this schema. Do 
     }
   }
 
-  async generateAnswer(question, relevantChunks) {
+  async generateAnswer(question, profileChunks, jdChunks) {
     const session = await this.getAISession();
     if (!session) {
       const fallback = new SemanticSynthesisStrategy();
-      return fallback.generateAnswer(question, relevantChunks);
+      return fallback.generateAnswer(question, profileChunks, jdChunks);
     }
 
-    const prompt = `You are an expert career assistant. Answer the candidate's application question using the provided context chunks of their professional summary and the job description.
+    const prompt = `You are an expert career assistant. Answer the candidate's question by cross-referencing their profile/resume against the job description.
     
-Context:
-${relevantChunks.join("\n---\n")}
+Candidate Profile Context:
+${profileChunks.join("\n---\n")}
+
+Job Description Context:
+${jdChunks.join("\n---\n")}
 
 Question: ${question}
 
 Instructions:
-1. Provide a professional, clean, and direct answer based ONLY on the context.
-2. If the context doesn't contain enough information, state what is missing and suggest how they could answer it based on the JD.
-3. Keep the response under 150 words. Do not use conversational introductions.`;
+1. Provide a professional, direct, and accurate answer based on the context.
+2. Distinctly separate what is in the candidate's profile versus what is required in the job description. Do not attribute requirements from the JD to the candidate's profile.
+3. If the candidate profile does not contain the skill/experience mentioned in the question, clearly state that it is missing from their profile.
+4. Keep the response under 150 words. Do not use conversational introductions.`;
 
     try {
       const response = await session.prompt(prompt);
@@ -110,7 +115,7 @@ Instructions:
     } catch (e) {
       console.error("Gemini Nano Q&A generation error, falling back:", e);
       const fallback = new SemanticSynthesisStrategy();
-      return fallback.generateAnswer(question, relevantChunks);
+      return fallback.generateAnswer(question, profileChunks, jdChunks);
     }
   }
 }
@@ -194,37 +199,95 @@ class SemanticSynthesisStrategy extends RAGStrategy {
     };
   }
 
-  async generateAnswer(question, relevantChunks) {
-    if (!relevantChunks || relevantChunks.length === 0) {
-      return "I couldn't find any relevant details in your profile or the job description to answer this question. Please make sure your summary is complete and the JD is scanned.";
+  async generateAnswer(question, profileChunks, jdChunks) {
+    if ((!profileChunks || profileChunks.length === 0) && (!jdChunks || jdChunks.length === 0)) {
+      return "I couldn't find any details in your profile or the job description to answer this question. Please make sure your career summary is saved and the JD is scanned.";
     }
 
-    // Semantic compilation of chunks: Find sentences in relevant chunks that match the question's keywords
     const questionKeywords = this.extractKeywords(question);
-    const sentences = [];
     
-    for (const chunk of relevantChunks) {
-      const chunkSentences = chunk.split(/[.!?]+/).map(s => s.trim()).filter(s => s.length > 15);
-      for (const sent of chunkSentences) {
-        const words = this.extractKeywords(sent);
-        const overlapCount = words.filter(w => questionKeywords.includes(w)).length;
-        if (overlapCount > 0) {
-          sentences.push({ text: sent, score: overlapCount });
+    // If no meaningful keywords are left, use all words length > 2
+    const searchKeywords = questionKeywords.length > 0 ? questionKeywords : 
+      question.toLowerCase().replace(/[^a-zA-Z0-9\s]/g, "").split(/\s+/).filter(w => w.length > 2);
+
+    const profileSentences = [];
+    if (profileChunks) {
+      for (const chunk of profileChunks) {
+        const chunkSents = chunk.split(/[.!?\n*]+/).map(s => s.trim()).filter(s => s.length > 8);
+        for (const sent of chunkSents) {
+          const matchedWords = this.extractKeywords(sent).filter(w => searchKeywords.includes(w));
+          if (matchedWords.length > 0) {
+            profileSentences.push({ text: sent, score: matchedWords.length });
+          }
         }
       }
     }
 
-    // Sort by overlap keyword matching score
-    sentences.sort((a, b) => b.score - a.score);
-
-    if (sentences.length > 0) {
-      const topSentences = sentences.slice(0, 3).map(s => s.text);
-      return `Based on your profile: ${topSentences.join(". ")}. This directly matches the job requirements context.`;
+    const jdSentences = [];
+    if (jdChunks) {
+      for (const chunk of jdChunks) {
+        const chunkSents = chunk.split(/[.!?\n*]+/).map(s => s.trim()).filter(s => s.length > 8);
+        for (const sent of chunkSents) {
+          const matchedWords = this.extractKeywords(sent).filter(w => searchKeywords.includes(w));
+          if (matchedWords.length > 0) {
+            jdSentences.push({ text: sent, score: matchedWords.length });
+          }
+        }
+      }
     }
 
-    // Fallback: simple merge of the most semantically relevant text blocks
-    const summaryInfo = relevantChunks[0].split(/[.!?]+/).slice(0, 2).join(". ");
-    return `Based on your professional summary: "${summaryInfo}." (No exact match found in your profile for your question, you might want to edit your summary to address this requirement).`;
+    // Sort by match score (descending)
+    profileSentences.sort((a, b) => b.score - a.score);
+    jdSentences.sort((a, b) => b.score - a.score);
+
+    // Let's analyze matched status
+    const hasProfileMatch = profileSentences.length > 0;
+    const hasJdMatch = jdSentences.length > 0;
+
+    let response = "";
+
+    // Target specific skills requested
+    const targetSkills = searchKeywords.map(w => w.charAt(0).toUpperCase() + w.slice(1)).join(", ");
+
+    if (hasProfileMatch && hasJdMatch) {
+      const pText = profileSentences.slice(0, 2).map(s => s.text).join(". ");
+      const jText = jdSentences.slice(0, 2).map(s => s.text).join(". ");
+      response = `Yes. Your profile matches the requirement for ${targetSkills}.\n\n` + 
+                 `• From your profile: "${pText}"\n` + 
+                 `• Job requirement details: "${jText}"`;
+    } else if (hasProfileMatch && !hasJdMatch) {
+      const pText = profileSentences.slice(0, 2).map(s => s.text).join(". ");
+      response = `Yes, your profile mentions experience in ${targetSkills}: "${pText}". However, this skill is not explicitly highlighted as a requirement in the scanned Job Description.`;
+    } else if (!hasProfileMatch && hasJdMatch) {
+      const jText = jdSentences.slice(0, 2).map(s => s.text).join(". ");
+      response = `No, your profile does not explicitly mention experience in ${targetSkills}.\n\n` +
+                 `However, this is required by the Job Description:\n` +
+                 `• "${jText}"\n\n` +
+                 `You might need to update your candidate summary to showcase relevant experience if you have it.`;
+    } else {
+      // General question fallback when no target keywords match specifically
+      const allProfileSents = [];
+      if (profileChunks) {
+        for (const chunk of profileChunks) {
+          allProfileSents.push(...chunk.split(/[.!?\n]+/).map(s => s.trim()).filter(s => s.length > 15));
+        }
+      }
+      const allJdSents = [];
+      if (jdChunks) {
+        for (const chunk of jdChunks) {
+          allJdSents.push(...chunk.split(/[.!?\n]+/).map(s => s.trim()).filter(s => s.length > 15));
+        }
+      }
+
+      const topProfile = allProfileSents.slice(0, 2).join(". ");
+      const topJd = allJdSents.slice(0, 2).join(". ");
+
+      response = `I couldn't find a direct keyword match for "${searchKeywords.join(', ')}" in either your profile or the job description.\n\n` +
+                 `• Summary of your profile: "${topProfile || 'No profile details saved.'}"\n` +
+                 `• Scanned Job context: "${topJd || 'No job description details saved.'}"`;
+    }
+
+    return response;
   }
 
   /**
@@ -234,7 +297,8 @@ class SemanticSynthesisStrategy extends RAGStrategy {
    */
   extractKeywords(text) {
     const stopwords = new Set([
-      'i', 'me', 'my', 'myself', 'we', 'our', 'ours', 'ourselves', 'you', 'your', 'yours', 'the', 'a', 'an', 'and', 'or', 'but', 'if', 'then', 'else', 'with', 'for', 'of', 'in', 'on', 'at', 'to', 'from', 'by', 'about', 'as', 'that', 'this', 'is', 'are', 'was', 'were', 'be', 'been', 'have', 'has', 'had', 'do', 'does', 'did', 'can', 'will', 'should', 'would', 'could'
+      'i', 'me', 'my', 'myself', 'we', 'our', 'ours', 'ourselves', 'you', 'your', 'yours', 'the', 'a', 'an', 'and', 'or', 'but', 'if', 'then', 'else', 'with', 'for', 'of', 'in', 'on', 'at', 'to', 'from', 'by', 'about', 'as', 'that', 'this', 'is', 'are', 'was', 'were', 'be', 'been', 'have', 'has', 'had', 'do', 'does', 'did', 'can', 'will', 'should', 'would', 'could',
+      'experience', 'project', 'projects', 'skills', 'skill', 'hands-on', 'years', 'role', 'work', 'job', 'candidate', 'profile', 'resume', 'position', 'description', 'details', 'question', 'answer'
     ]);
     return text.toLowerCase()
       .replace(/[^a-zA-Z0-9\s]/g, "")
@@ -281,13 +345,14 @@ export class RAGService {
   /**
    * Generates an answer to a question using the retrieved context.
    * @param {string} question 
-   * @param {string[]} relevantChunks 
+   * @param {string[]} profileChunks 
+   * @param {string[]} jdChunks 
    * @returns {Promise<string>}
    */
-  async generateAnswer(question, relevantChunks) {
+  async generateAnswer(question, profileChunks, jdChunks) {
     if (!this.strategy) {
       await this.initStrategy();
     }
-    return this.strategy.generateAnswer(question, relevantChunks);
+    return this.strategy.generateAnswer(question, profileChunks, jdChunks);
   }
 }
