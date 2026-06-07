@@ -1,0 +1,14 @@
+{
+  "name": "easy-apply-job",
+  "version": "1.0.0",
+  "description": "Chrome extension to assist with job applications using local RAG",
+  "scripts": {
+    "build": "esbuild background.js content.js popup.js --bundle --outdir=dist --platform=browser"
+  },
+  "dependencies": {
+    "@huggingface/transformers": "^3.0.0"
+  },
+  "devDependencies": {
+    "esbuild": "^0.20.1"
+  }
+}
