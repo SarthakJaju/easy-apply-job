@@ -254,6 +254,9 @@ async function injectAndOpenSidebar() {
       container.classList.add('easy-apply-minimized');
     });
 
+    // Check Gemini Nano availability on startup
+    checkGeminiNano();
+
     // Dragging logic
     const dragHeader = container.querySelector('.easy-apply-header');
     let isDragging = false;
@@ -571,6 +574,13 @@ async function injectAndOpenSidebar() {
  */
 async function loadAndRenderReport() {
   if (checkAndShowContextInvalid()) return;
+  
+  const hasNano = await checkGeminiNano();
+  if (!hasNano) {
+    showErrorState("Chrome's native Gemini Nano AI is unavailable on this device. Please enable Gemini Nano in chrome://flags.");
+    return;
+  }
+
   const loader = document.getElementById('sb-loader');
   const section = document.getElementById('sb-analysis-section');
   
@@ -645,17 +655,43 @@ async function loadAndRenderReport() {
     if (e.message && e.message.includes("context invalidated")) {
       showErrorState("Extension context invalidated. Please refresh this page to reload the assistant.");
     } else {
-      showErrorState("Failed to compile matching report.");
+      showErrorState(e.message || "Failed to compile matching report.");
     }
   }
+}
+
+/**
+ * Helper to check Gemini Nano availability.
+ * @returns {Promise<boolean>}
+ */
+async function checkGeminiNano() {
+  const isBrowserAIAvailable = typeof window !== 'undefined' && window.ai && window.ai.languageModel;
+  let ready = false;
+  if (isBrowserAIAvailable) {
+    try {
+      const capabilities = await window.ai.languageModel.capabilities();
+      if (capabilities.available !== 'no') {
+        ready = true;
+      }
+    } catch (e) {
+      console.warn("Gemini Nano capabilities check failed:", e);
+    }
+  }
+
+  if (!ready) {
+    showStatus("Error: Chrome's native Gemini Nano AI is unavailable. Please enable Gemini Nano in chrome://flags to use this extension.", "error", true);
+    return false;
+  }
+  return true;
 }
 
 /**
  * Shows visual status messages in the alert container.
  * @param {string} msg 
  * @param {'success' | 'error' | 'info'} [type] 
+ * @param {boolean} [persistent]
  */
-function showStatus(msg, type) {
+function showStatus(msg, type, persistent = false) {
   const alertDiv = document.getElementById('sb-status-alert');
   if (!alertDiv) return;
   
@@ -669,11 +705,13 @@ function showStatus(msg, type) {
     clearTimeout(alertDiv.timeoutId);
   }
   
-  alertDiv.timeoutId = setTimeout(() => {
-    alertDiv.style.display = 'none';
-    alertDiv.innerText = "";
-    alertDiv.className = "";
-  }, 4500);
+  if (!persistent) {
+    alertDiv.timeoutId = setTimeout(() => {
+      alertDiv.style.display = 'none';
+      alertDiv.innerText = "";
+      alertDiv.className = "";
+    }, 4500);
+  }
 }
 
 /**
@@ -787,6 +825,13 @@ async function handleQuestionSubmit() {
   if (!question) {
     answerBox.value = "Please enter a question first.";
     showStatus("Please enter a question first.", "error");
+    return;
+  }
+
+  const hasNano = await checkGeminiNano();
+  if (!hasNano) {
+    answerBox.value = "Error: Chrome's native Gemini Nano AI is unavailable on this device. Please enable Gemini Nano in chrome://flags.";
+    showStatus("Gemini Nano AI is unavailable.", "error", true);
     return;
   }
 

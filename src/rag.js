@@ -44,17 +44,14 @@ class ChromeBuiltInAIStrategy extends RAGStrategy {
         topK: 3
       });
     } catch (e) {
-      console.warn("Failed to create built-in AI session:", e);
-      return null;
+      throw new Error("Failed to create built-in AI session: " + e.message);
     }
   }
 
   async generateReport(userChunks, jdChunks, userEmbeddings, jdEmbeddings) {
     const session = await this.getAISession();
     if (!session) {
-      // Fallback if session creation fails
-      const fallback = new SemanticSynthesisStrategy();
-      return fallback.generateReport(userChunks, jdChunks, userEmbeddings, jdEmbeddings);
+      throw new Error("Failed to create Gemini Nano AI session. Please check if Gemini Nano is enabled in chrome://flags.");
     }
 
     const prompt = `You are a professional HR assistant. Compare the candidate's professional resume chunks with the job description (JD) chunks.
@@ -79,17 +76,15 @@ Provide a JSON report. Return ONLY a valid JSON object matching this schema. Do 
       const cleanJson = response.trim().replace(/^```json/, "").replace(/```$/, "").trim();
       return JSON.parse(cleanJson);
     } catch (e) {
-      console.error("Gemini Nano report generation error, falling back:", e);
-      const fallback = new SemanticSynthesisStrategy();
-      return fallback.generateReport(userChunks, jdChunks, userEmbeddings, jdEmbeddings);
+      console.error("Gemini Nano report generation error:", e);
+      throw new Error("Gemini Nano failed to generate report: " + e.message);
     }
   }
 
   async generateAnswer(question, profileChunks, jdChunks) {
     const session = await this.getAISession();
     if (!session) {
-      const fallback = new SemanticSynthesisStrategy();
-      return fallback.generateAnswer(question, profileChunks, jdChunks);
+      throw new Error("Failed to create Gemini Nano AI session. Please check if Gemini Nano is enabled in chrome://flags.");
     }
 
     const prompt = `You are an expert career assistant. Answer the candidate's question by cross-referencing their profile/resume against the job description.
@@ -113,9 +108,8 @@ Instructions:
       session.destroy();
       return response.trim();
     } catch (e) {
-      console.error("Gemini Nano Q&A generation error, falling back:", e);
-      const fallback = new SemanticSynthesisStrategy();
-      return fallback.generateAnswer(question, profileChunks, jdChunks);
+      console.error("Gemini Nano Q&A generation error:", e);
+      throw new Error("Gemini Nano failed to answer question: " + e.message);
     }
   }
 }
@@ -321,10 +315,17 @@ export class RAGService {
   async initStrategy() {
     const isBrowserAIAvailable = typeof window !== 'undefined' && window.ai && window.ai.languageModel;
     if (isBrowserAIAvailable) {
-      this.strategy = new ChromeBuiltInAIStrategy();
-    } else {
-      this.strategy = new SemanticSynthesisStrategy();
+      try {
+        const capabilities = await window.ai.languageModel.capabilities();
+        if (capabilities.available !== 'no') {
+          this.strategy = new ChromeBuiltInAIStrategy();
+          return;
+        }
+      } catch (e) {
+        console.warn("Error checking Gemini Nano capabilities:", e);
+      }
     }
+    this.strategy = null;
   }
 
   /**
@@ -339,6 +340,9 @@ export class RAGService {
     if (!this.strategy) {
       await this.initStrategy();
     }
+    if (!this.strategy) {
+      throw new Error("Chrome's native Gemini Nano AI is unavailable on this device. Please enable Gemini Nano in chrome://flags.");
+    }
     return this.strategy.generateReport(userChunks, jdChunks, userEmbeddings, jdEmbeddings);
   }
 
@@ -352,6 +356,9 @@ export class RAGService {
   async generateAnswer(question, profileChunks, jdChunks) {
     if (!this.strategy) {
       await this.initStrategy();
+    }
+    if (!this.strategy) {
+      throw new Error("Chrome's native Gemini Nano AI is unavailable on this device. Please enable Gemini Nano in chrome://flags.");
     }
     return this.strategy.generateAnswer(question, profileChunks, jdChunks);
   }

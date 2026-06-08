@@ -275,15 +275,13 @@
           topK: 3
         });
       } catch (e) {
-        console.warn("Failed to create built-in AI session:", e);
-        return null;
+        throw new Error("Failed to create built-in AI session: " + e.message);
       }
     }
     async generateReport(userChunks, jdChunks, userEmbeddings, jdEmbeddings) {
       const session = await this.getAISession();
       if (!session) {
-        const fallback = new SemanticSynthesisStrategy();
-        return fallback.generateReport(userChunks, jdChunks, userEmbeddings, jdEmbeddings);
+        throw new Error("Failed to create Gemini Nano AI session. Please check if Gemini Nano is enabled in chrome://flags.");
       }
       const prompt = `You are a professional HR assistant. Compare the candidate's professional resume chunks with the job description (JD) chunks.
 Candidate Resume Context:
@@ -304,16 +302,14 @@ Provide a JSON report. Return ONLY a valid JSON object matching this schema. Do 
         const cleanJson = response.trim().replace(/^```json/, "").replace(/```$/, "").trim();
         return JSON.parse(cleanJson);
       } catch (e) {
-        console.error("Gemini Nano report generation error, falling back:", e);
-        const fallback = new SemanticSynthesisStrategy();
-        return fallback.generateReport(userChunks, jdChunks, userEmbeddings, jdEmbeddings);
+        console.error("Gemini Nano report generation error:", e);
+        throw new Error("Gemini Nano failed to generate report: " + e.message);
       }
     }
     async generateAnswer(question, profileChunks, jdChunks) {
       const session = await this.getAISession();
       if (!session) {
-        const fallback = new SemanticSynthesisStrategy();
-        return fallback.generateAnswer(question, profileChunks, jdChunks);
+        throw new Error("Failed to create Gemini Nano AI session. Please check if Gemini Nano is enabled in chrome://flags.");
       }
       const prompt = `You are an expert career assistant. Answer the candidate's question by cross-referencing their profile/resume against the job description.
     
@@ -335,220 +331,9 @@ Instructions:
         session.destroy();
         return response.trim();
       } catch (e) {
-        console.error("Gemini Nano Q&A generation error, falling back:", e);
-        const fallback = new SemanticSynthesisStrategy();
-        return fallback.generateAnswer(question, profileChunks, jdChunks);
+        console.error("Gemini Nano Q&A generation error:", e);
+        throw new Error("Gemini Nano failed to answer question: " + e.message);
       }
-    }
-  };
-  var SemanticSynthesisStrategy = class extends RAGStrategy {
-    async generateReport(userChunks, jdChunks, userEmbeddings, jdEmbeddings) {
-      if (!userEmbeddings || !jdEmbeddings || userEmbeddings.length === 0 || jdEmbeddings.length === 0) {
-        return {
-          score: 0,
-          matches: ["Please save your Career Summary and a valid Job Description to calculate alignment."],
-          suggestions: ["Save your profile data and scan a job details page."]
-        };
-      }
-      const similarities = [];
-      const matches = [];
-      const suggestions = [];
-      for (let j = 0; j < jdChunks.length; j++) {
-        let maxSim = -1;
-        let bestMatchIdx = -1;
-        for (let u = 0; u < userChunks.length; u++) {
-          const sim = cosineSimilarity(jdEmbeddings[j], userEmbeddings[u]);
-          if (sim > maxSim) {
-            maxSim = sim;
-            bestMatchIdx = u;
-          }
-        }
-        similarities.push(maxSim);
-        const sentences = jdChunks[j].split(/[.!?]+/).map((s) => s.trim()).filter((s) => s.length > 20);
-        if (maxSim > 0.55) {
-          const keywordKeywords = this.extractKeywords(jdChunks[j]);
-          const matchedKeywords = this.extractKeywords(userChunks[bestMatchIdx]).filter((w) => keywordKeywords.includes(w));
-          if (matchedKeywords.length > 0 && sentences.length > 0) {
-            matches.push(`Strong alignment with: "${sentences[0]}" (Semantic Match: ${Math.round(maxSim * 100)}%, matching skills: ${matchedKeywords.slice(0, 3).join(", ")})`);
-          } else if (sentences.length > 0) {
-            matches.push(`Matches requirement: "${sentences[0]}"`);
-          }
-        } else {
-          if (sentences.length > 0) {
-            suggestions.push(`Consider adding details about: "${sentences[0]}"`);
-          }
-        }
-      }
-      const avgSimilarity = similarities.reduce((a, b) => a + b, 0) / similarities.length;
-      let score = Math.round(30 + Math.max(0, Math.min(65, (avgSimilarity - 0.2) / 0.55 * 65)));
-      if (isNaN(score)) score = 50;
-      const uniqueMatches = Array.from(new Set(matches)).slice(0, 4);
-      const uniqueSuggestions = Array.from(new Set(suggestions)).slice(0, 4);
-      if (uniqueMatches.length === 0) {
-        uniqueMatches.push("Partial matching found. Try adding more detail to your professional summary.");
-      }
-      if (uniqueSuggestions.length === 0) {
-        uniqueSuggestions.push("Your profile matches this job description very well! No major gaps identified.");
-      }
-      return {
-        score,
-        matches: uniqueMatches,
-        suggestions: uniqueSuggestions
-      };
-    }
-    async generateAnswer(question, profileChunks, jdChunks) {
-      if ((!profileChunks || profileChunks.length === 0) && (!jdChunks || jdChunks.length === 0)) {
-        return "I couldn't find any details in your profile or the job description to answer this question. Please make sure your career summary is saved and the JD is scanned.";
-      }
-      const questionKeywords = this.extractKeywords(question);
-      const searchKeywords = questionKeywords.length > 0 ? questionKeywords : question.toLowerCase().replace(/[^a-zA-Z0-9\s]/g, "").split(/\s+/).filter((w) => w.length > 2);
-      const profileSentences = [];
-      if (profileChunks) {
-        for (const chunk2 of profileChunks) {
-          const chunkSents = chunk2.split(/[.!?\n*]+/).map((s) => s.trim()).filter((s) => s.length > 8);
-          for (const sent of chunkSents) {
-            const matchedWords = this.extractKeywords(sent).filter((w) => searchKeywords.includes(w));
-            if (matchedWords.length > 0) {
-              profileSentences.push({ text: sent, score: matchedWords.length });
-            }
-          }
-        }
-      }
-      const jdSentences = [];
-      if (jdChunks) {
-        for (const chunk2 of jdChunks) {
-          const chunkSents = chunk2.split(/[.!?\n*]+/).map((s) => s.trim()).filter((s) => s.length > 8);
-          for (const sent of chunkSents) {
-            const matchedWords = this.extractKeywords(sent).filter((w) => searchKeywords.includes(w));
-            if (matchedWords.length > 0) {
-              jdSentences.push({ text: sent, score: matchedWords.length });
-            }
-          }
-        }
-      }
-      profileSentences.sort((a, b) => b.score - a.score);
-      jdSentences.sort((a, b) => b.score - a.score);
-      const hasProfileMatch = profileSentences.length > 0;
-      const hasJdMatch = jdSentences.length > 0;
-      let response = "";
-      const targetSkills = searchKeywords.map((w) => w.charAt(0).toUpperCase() + w.slice(1)).join(", ");
-      if (hasProfileMatch && hasJdMatch) {
-        const pText = profileSentences.slice(0, 2).map((s) => s.text).join(". ");
-        const jText = jdSentences.slice(0, 2).map((s) => s.text).join(". ");
-        response = `Yes. Your profile matches the requirement for ${targetSkills}.
-
-\u2022 From your profile: "${pText}"
-\u2022 Job requirement details: "${jText}"`;
-      } else if (hasProfileMatch && !hasJdMatch) {
-        const pText = profileSentences.slice(0, 2).map((s) => s.text).join(". ");
-        response = `Yes, your profile mentions experience in ${targetSkills}: "${pText}". However, this skill is not explicitly highlighted as a requirement in the scanned Job Description.`;
-      } else if (!hasProfileMatch && hasJdMatch) {
-        const jText = jdSentences.slice(0, 2).map((s) => s.text).join(". ");
-        response = `No, your profile does not explicitly mention experience in ${targetSkills}.
-
-However, this is required by the Job Description:
-\u2022 "${jText}"
-
-You might need to update your candidate summary to showcase relevant experience if you have it.`;
-      } else {
-        const allProfileSents = [];
-        if (profileChunks) {
-          for (const chunk2 of profileChunks) {
-            allProfileSents.push(...chunk2.split(/[.!?\n]+/).map((s) => s.trim()).filter((s) => s.length > 15));
-          }
-        }
-        const allJdSents = [];
-        if (jdChunks) {
-          for (const chunk2 of jdChunks) {
-            allJdSents.push(...chunk2.split(/[.!?\n]+/).map((s) => s.trim()).filter((s) => s.length > 15));
-          }
-        }
-        const topProfile = allProfileSents.slice(0, 2).join(". ");
-        const topJd = allJdSents.slice(0, 2).join(". ");
-        response = `I couldn't find a direct keyword match for "${searchKeywords.join(", ")}" in either your profile or the job description.
-
-\u2022 Summary of your profile: "${topProfile || "No profile details saved."}"
-\u2022 Scanned Job context: "${topJd || "No job description details saved."}"`;
-      }
-      return response;
-    }
-    /**
-     * Helper utility to extract keywords from text.
-     * @param {string} text 
-     * @returns {string[]}
-     */
-    extractKeywords(text) {
-      const stopwords = /* @__PURE__ */ new Set([
-        "i",
-        "me",
-        "my",
-        "myself",
-        "we",
-        "our",
-        "ours",
-        "ourselves",
-        "you",
-        "your",
-        "yours",
-        "the",
-        "a",
-        "an",
-        "and",
-        "or",
-        "but",
-        "if",
-        "then",
-        "else",
-        "with",
-        "for",
-        "of",
-        "in",
-        "on",
-        "at",
-        "to",
-        "from",
-        "by",
-        "about",
-        "as",
-        "that",
-        "this",
-        "is",
-        "are",
-        "was",
-        "were",
-        "be",
-        "been",
-        "have",
-        "has",
-        "had",
-        "do",
-        "does",
-        "did",
-        "can",
-        "will",
-        "should",
-        "would",
-        "could",
-        "experience",
-        "project",
-        "projects",
-        "skills",
-        "skill",
-        "hands-on",
-        "years",
-        "role",
-        "work",
-        "job",
-        "candidate",
-        "profile",
-        "resume",
-        "position",
-        "description",
-        "details",
-        "question",
-        "answer"
-      ]);
-      return text.toLowerCase().replace(/[^a-zA-Z0-9\s]/g, "").split(/\s+/).filter((w) => w.length > 3 && !stopwords.has(w));
     }
   };
   var RAGService = class {
@@ -561,10 +346,17 @@ You might need to update your candidate summary to showcase relevant experience 
     async initStrategy() {
       const isBrowserAIAvailable = typeof window !== "undefined" && window.ai && window.ai.languageModel;
       if (isBrowserAIAvailable) {
-        this.strategy = new ChromeBuiltInAIStrategy();
-      } else {
-        this.strategy = new SemanticSynthesisStrategy();
+        try {
+          const capabilities = await window.ai.languageModel.capabilities();
+          if (capabilities.available !== "no") {
+            this.strategy = new ChromeBuiltInAIStrategy();
+            return;
+          }
+        } catch (e) {
+          console.warn("Error checking Gemini Nano capabilities:", e);
+        }
       }
+      this.strategy = null;
     }
     /**
      * Generates a matching report comparing JD vs User data.
@@ -578,6 +370,9 @@ You might need to update your candidate summary to showcase relevant experience 
       if (!this.strategy) {
         await this.initStrategy();
       }
+      if (!this.strategy) {
+        throw new Error("Chrome's native Gemini Nano AI is unavailable on this device. Please enable Gemini Nano in chrome://flags.");
+      }
       return this.strategy.generateReport(userChunks, jdChunks, userEmbeddings, jdEmbeddings);
     }
     /**
@@ -590,6 +385,9 @@ You might need to update your candidate summary to showcase relevant experience 
     async generateAnswer(question, profileChunks, jdChunks) {
       if (!this.strategy) {
         await this.initStrategy();
+      }
+      if (!this.strategy) {
+        throw new Error("Chrome's native Gemini Nano AI is unavailable on this device. Please enable Gemini Nano in chrome://flags.");
       }
       return this.strategy.generateAnswer(question, profileChunks, jdChunks);
     }
@@ -34031,6 +33829,7 @@ ${fake_token_around_image}${global_img_token}` + image_token.repeat(image_seq_le
       document.getElementById("easy-apply-minimize-btn").addEventListener("click", () => {
         container.classList.add("easy-apply-minimized");
       });
+      checkGeminiNano();
       const dragHeader = container.querySelector(".easy-apply-header");
       let isDragging = false;
       let startX, startY, startTop, startLeft;
@@ -34239,6 +34038,11 @@ ${fake_token_around_image}${global_img_token}` + image_token.repeat(image_seq_le
   }
   async function loadAndRenderReport() {
     if (checkAndShowContextInvalid()) return;
+    const hasNano = await checkGeminiNano();
+    if (!hasNano) {
+      showErrorState("Chrome's native Gemini Nano AI is unavailable on this device. Please enable Gemini Nano in chrome://flags.");
+      return;
+    }
     const loader = document.getElementById("sb-loader");
     const section = document.getElementById("sb-analysis-section");
     if (isSyncingProfile || isSyncingJD) {
@@ -34299,11 +34103,30 @@ ${fake_token_around_image}${global_img_token}` + image_token.repeat(image_seq_le
       if (e.message && e.message.includes("context invalidated")) {
         showErrorState("Extension context invalidated. Please refresh this page to reload the assistant.");
       } else {
-        showErrorState("Failed to compile matching report.");
+        showErrorState(e.message || "Failed to compile matching report.");
       }
     }
   }
-  function showStatus(msg, type) {
+  async function checkGeminiNano() {
+    const isBrowserAIAvailable = typeof window !== "undefined" && window.ai && window.ai.languageModel;
+    let ready = false;
+    if (isBrowserAIAvailable) {
+      try {
+        const capabilities = await window.ai.languageModel.capabilities();
+        if (capabilities.available !== "no") {
+          ready = true;
+        }
+      } catch (e) {
+        console.warn("Gemini Nano capabilities check failed:", e);
+      }
+    }
+    if (!ready) {
+      showStatus("Error: Chrome's native Gemini Nano AI is unavailable. Please enable Gemini Nano in chrome://flags to use this extension.", "error", true);
+      return false;
+    }
+    return true;
+  }
+  function showStatus(msg, type, persistent = false) {
     const alertDiv = document.getElementById("sb-status-alert");
     if (!alertDiv) return;
     alertDiv.className = "";
@@ -34313,11 +34136,13 @@ ${fake_token_around_image}${global_img_token}` + image_token.repeat(image_seq_le
     if (alertDiv.timeoutId) {
       clearTimeout(alertDiv.timeoutId);
     }
-    alertDiv.timeoutId = setTimeout(() => {
-      alertDiv.style.display = "none";
-      alertDiv.innerText = "";
-      alertDiv.className = "";
-    }, 4500);
+    if (!persistent) {
+      alertDiv.timeoutId = setTimeout(() => {
+        alertDiv.style.display = "none";
+        alertDiv.innerText = "";
+        alertDiv.className = "";
+      }, 4500);
+    }
   }
   function showErrorState(msg) {
     const loaderText = document.querySelector(".sb-loader-text");
@@ -34400,6 +34225,12 @@ ${fake_token_around_image}${global_img_token}` + image_token.repeat(image_seq_le
     if (!question) {
       answerBox.value = "Please enter a question first.";
       showStatus("Please enter a question first.", "error");
+      return;
+    }
+    const hasNano = await checkGeminiNano();
+    if (!hasNano) {
+      answerBox.value = "Error: Chrome's native Gemini Nano AI is unavailable on this device. Please enable Gemini Nano in chrome://flags.";
+      showStatus("Gemini Nano AI is unavailable.", "error", true);
       return;
     }
     answerBox.value = "Generating local embeddings & retrieving context...";
