@@ -2,7 +2,7 @@ import { ChromaClient } from './src/chromadb.js';
 import { TextSplitter, EmbeddingEngine } from './src/embeddings.js';
 
 const chromaClient = new ChromaClient();
-const splitter = new TextSplitter({ chunkSize: 350, chunkOverlap: 200 });
+const splitter = new TextSplitter({ chunkSize: 200, chunkOverlap: 30 });
 const embeddingEngine = new EmbeddingEngine();
 
 document.addEventListener('DOMContentLoaded', () => {

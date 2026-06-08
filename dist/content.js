@@ -33594,15 +33594,25 @@ ${fake_token_around_image}${global_img_token}` + image_token.repeat(image_seq_le
      * @param {number} [options.chunkSize] - Target size of each chunk (in word-tokens)
      * @param {number} [options.chunkOverlap] - Word-token overlap between chunks
      */
-    constructor({ chunkSize = 350, chunkOverlap = 200 } = {}) {
+    constructor({ chunkSize = 200, chunkOverlap = 30 } = {}) {
       this.chunkSize = chunkSize;
       this.chunkOverlap = chunkOverlap;
+      this.separators = ["\n\n", "\n", ". ", " "];
       if (this.chunkOverlap >= this.chunkSize) {
         throw new Error("Overlap must be smaller than chunk size.");
       }
     }
     /**
-     * Splits a block of text by words (representing tokens).
+     * Helper to count words inside a block.
+     * @param {string} text - Block of text
+     * @returns {number} Word count
+     */
+    _getWordCount(text) {
+      if (!text) return 0;
+      return text.trim().split(/\s+/).filter((w) => w.length > 0).length;
+    }
+    /**
+     * Splits a block of text recursively based on hierarchy of separators.
      * @param {string} text - Text content to split
      * @returns {string[]} Chunks
      */
@@ -33610,22 +33620,89 @@ ${fake_token_around_image}${global_img_token}` + image_token.repeat(image_seq_le
       if (!text || typeof text !== "string") {
         return [];
       }
-      const words = text.trim().replace(/\s+/g, " ").split(" ");
-      if (words.length <= this.chunkSize) {
+      const rawChunks = this._splitText(text, this.separators);
+      return rawChunks.map((c) => c.trim()).filter((c) => c.length > 0);
+    }
+    /**
+     * Internal recursive splitter implementation.
+     * @param {string} text 
+     * @param {string[]} separators 
+     * @returns {string[]}
+     */
+    _splitText(text, separators) {
+      const wordCount = this._getWordCount(text);
+      if (wordCount <= this.chunkSize) {
         return [text.trim()];
       }
-      const chunks = [];
-      let startIdx = 0;
-      while (startIdx < words.length) {
-        const endIdx = Math.min(startIdx + this.chunkSize, words.length);
-        const chunkWords = words.slice(startIdx, endIdx);
-        chunks.push(chunkWords.join(" "));
-        if (endIdx === words.length) {
+      let separator = separators[separators.length - 1];
+      let newSeparators = [];
+      for (let i = 0; i < separators.length; i++) {
+        const sep = separators[i];
+        if (sep === "") {
+          separator = sep;
           break;
         }
-        startIdx += this.chunkSize - this.chunkOverlap;
+        if (text.includes(sep)) {
+          separator = sep;
+          newSeparators = separators.slice(i + 1);
+          break;
+        }
       }
-      return chunks;
+      const splits = text.split(separator);
+      const finalChunks = [];
+      let goodSplits = [];
+      for (const s of splits) {
+        if (this._getWordCount(s) <= this.chunkSize) {
+          goodSplits.push(s);
+        } else {
+          if (goodSplits.length > 0) {
+            const mergedText = this._mergeSplits(goodSplits, separator);
+            finalChunks.push(...mergedText);
+            goodSplits = [];
+          }
+          if (!newSeparators.length) {
+            goodSplits.push(s);
+          } else {
+            const recursiveSplits = this._splitText(s, newSeparators);
+            finalChunks.push(...recursiveSplits);
+          }
+        }
+      }
+      if (goodSplits.length > 0) {
+        const mergedText = this._mergeSplits(goodSplits, separator);
+        finalChunks.push(...mergedText);
+      }
+      return finalChunks;
+    }
+    /**
+     * Merges list of split parts back with the separator while respecting chunk size and overlap.
+     * @param {string[]} splits 
+     * @param {string} separator 
+     * @returns {string[]}
+     */
+    _mergeSplits(splits, separator) {
+      const docs = [];
+      const currentDoc = [];
+      let total = 0;
+      for (const d of splits) {
+        const len2 = this._getWordCount(d);
+        if (len2 === 0) continue;
+        if (total + len2 > this.chunkSize) {
+          if (total > 0) {
+            docs.push(currentDoc.join(separator));
+          }
+          while (currentDoc.length > 0 && (total > this.chunkOverlap || total + len2 > this.chunkSize && total > 0)) {
+            const popped = currentDoc.shift();
+            total -= this._getWordCount(popped);
+          }
+        }
+        currentDoc.push(d);
+        total += len2;
+      }
+      if (currentDoc.length > 0) {
+        docs.push(currentDoc.join(separator));
+      }
+      return docs;
     }
   };
   var EmbeddingEngine = class {
@@ -33679,7 +33756,7 @@ ${fake_token_around_image}${global_img_token}` + image_token.repeat(image_seq_le
   var ragService = new RAGService();
   var chromaClient = new ChromaClient();
   var embeddingEngine = new EmbeddingEngine();
-  var splitter = new TextSplitter({ chunkSize: 350, chunkOverlap: 200 });
+  var splitter = new TextSplitter({ chunkSize: 200, chunkOverlap: 30 });
   var tabId = null;
   var isSyncingProfile = false;
   var isSyncingJD = false;

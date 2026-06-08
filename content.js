@@ -5,7 +5,7 @@ import { EmbeddingEngine, TextSplitter } from './src/embeddings.js';
 const ragService = new RAGService();
 const chromaClient = new ChromaClient();
 const embeddingEngine = new EmbeddingEngine();
-const splitter = new TextSplitter({ chunkSize: 350, chunkOverlap: 200 });
+const splitter = new TextSplitter({ chunkSize: 200, chunkOverlap: 30 });
 
 let tabId = null;
 let isSyncingProfile = false;
