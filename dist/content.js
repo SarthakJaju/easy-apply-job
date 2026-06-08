@@ -33709,18 +33709,31 @@ ${fake_token_around_image}${global_img_token}` + image_token.repeat(image_seq_le
     }
     async loadModel() {
       if (!this.tokenizer || !this.model) {
+        const t0 = performance.now();
         this.tokenizer = await AutoTokenizer.from_pretrained(this.modelName);
         this.model = await AutoModelForSequenceClassification.from_pretrained(this.modelName);
+        const t1 = performance.now();
+        console.log(`[Timer] Loaded Cross-Encoder re-ranker model in: ${(t1 - t0).toFixed(1)}ms`);
       }
     }
+    /**
+     * Scores query-document pairs.
+     * @param {string} query 
+     * @param {string[]} documents 
+     * @returns {Promise<number[]>} Relevance scores corresponding to each document
+     */
     async rerank(query, documents) {
       if (!documents || documents.length === 0) return [];
       await this.loadModel();
+      const t0 = performance.now();
       try {
         const pairs = documents.map((doc) => [query, doc]);
         const inputs = await this.tokenizer(pairs, { padding: true, truncation: true });
         const output = await this.model(inputs);
-        return Array.from(output.logits.data);
+        const result = Array.from(output.logits.data);
+        const t1 = performance.now();
+        console.log(`[Timer] Batch re-rank of ${documents.length} docs took: ${(t1 - t0).toFixed(1)}ms`);
+        return result;
       } catch (e) {
         console.error("Batch ReRanker error, falling back to dummy scores:", e);
         return new Array(documents.length).fill(-9999);
@@ -34435,11 +34448,15 @@ ${fake_token_around_image}${global_img_token}` + image_token.repeat(image_seq_le
     answerBox.value = "Retrieving context via hybrid search (Dense + BM25)...";
     showStatus("Performing hybrid retrieval...", "info");
     try {
+      const t0 = performance.now();
       const queryEmbedding = await embeddingEngine.getEmbedding(question, { isQuery: true });
+      const t1 = performance.now();
+      console.log(`[Timer] Embedding query took: ${(t1 - t0).toFixed(1)}ms`);
       const summaryColl = await chromaClient.getCollection("candidate_profile");
       const jdColl = await chromaClient.getCollection(`job_description_tab_${tabId}`);
       answerBox.value = "Retrieving & re-ranking context with cross-encoder...";
       showStatus("Retrieving and re-ranking context...", "info");
+      const t2 = performance.now();
       const [summaryResults, jdResults] = await Promise.all([
         summaryColl.queryHybrid({
           queryText: question,
@@ -34456,11 +34473,16 @@ ${fake_token_around_image}${global_img_token}` + image_token.repeat(image_seq_le
           nResults: 3
         })
       ]);
+      const t3 = performance.now();
+      console.log(`[Timer] Hybrid retrieval & Re-ranking took: ${(t3 - t2).toFixed(1)}ms`);
       const profileChunks = summaryResults.documents || [];
       const jdChunks = jdResults.documents || [];
       answerBox.value = "Generating answer using local RAG...";
       showStatus("Synthesizing answer...", "info");
+      const t4 = performance.now();
       const answer = await ragService.generateAnswer(question, profileChunks, jdChunks);
+      const t5 = performance.now();
+      console.log(`[Timer] Gemini Nano synthesis took: ${(t5 - t4).toFixed(1)}ms`);
       answerBox.value = answer;
       showStatus("Answer compiled!", "success");
     } catch (e) {

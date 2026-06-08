@@ -857,7 +857,10 @@ async function handleQuestionSubmit() {
   showStatus("Performing hybrid retrieval...", "info");
 
   try {
+    const t0 = performance.now();
     const queryEmbedding = await embeddingEngine.getEmbedding(question, { isQuery: true });
+    const t1 = performance.now();
+    console.log(`[Timer] Embedding query took: ${(t1 - t0).toFixed(1)}ms`);
     
     const summaryColl = await chromaClient.getCollection("candidate_profile");
     const jdColl = await chromaClient.getCollection(`job_description_tab_${tabId}`);
@@ -865,6 +868,7 @@ async function handleQuestionSubmit() {
     answerBox.value = "Retrieving & re-ranking context with cross-encoder...";
     showStatus("Retrieving and re-ranking context...", "info");
 
+    const t2 = performance.now();
     const [summaryResults, jdResults] = await Promise.all([
       summaryColl.queryHybrid({
         queryText: question,
@@ -881,6 +885,8 @@ async function handleQuestionSubmit() {
         nResults: 3
       })
     ]);
+    const t3 = performance.now();
+    console.log(`[Timer] Hybrid retrieval & Re-ranking took: ${(t3 - t2).toFixed(1)}ms`);
 
     const profileChunks = summaryResults.documents || [];
     const jdChunks = jdResults.documents || [];
@@ -888,7 +894,11 @@ async function handleQuestionSubmit() {
     answerBox.value = "Generating answer using local RAG...";
     showStatus("Synthesizing answer...", "info");
     
+    const t4 = performance.now();
     const answer = await ragService.generateAnswer(question, profileChunks, jdChunks);
+    const t5 = performance.now();
+    console.log(`[Timer] Gemini Nano synthesis took: ${(t5 - t4).toFixed(1)}ms`);
+
     answerBox.value = answer;
     showStatus("Answer compiled!", "success");
   } catch (e) {
