@@ -186,7 +186,106 @@ export class Collection {
     results.ids = topResults.map(r => r.id);
     results.documents = topResults.map(r => r.document);
     results.metadatas = topResults.map(r => r.metadata);
-    results.distances = topResults.map(r => r.score); // In Chroma, higher score means more similarity (here we use similarity directly)
+    results.distances = topResults.map(r => r.score); // In Chroma, higher score means more similarity
+
+    return results;
+  }
+
+  /**
+   * Queries the collection using hybrid search (dense + BM25) and re-ranks the results.
+   * @param {Object} params
+   * @param {string} params.queryText - The raw query text
+   * @param {number[][]} params.queryEmbeddings - The query vector
+   * @param {number} [params.nResults] - The final number of results to return
+   * @param {Object} [params.rerankerInstance] - Re-ranker class instance
+   * @param {number} [params.topK] - Candidate list size for re-ranking
+   * @returns {Promise<Object>} Results structure
+   */
+  async queryHybrid({ queryText, queryEmbeddings, nResults = 3, rerankerInstance = null, topK = 10 }) {
+    if (!queryEmbeddings || queryEmbeddings.length === 0) {
+      throw new Error("Query embeddings must be provided.");
+    }
+    if (!queryText) {
+      throw new Error("Query text must be provided.");
+    }
+
+    await this.load();
+
+    const N = this.data.ids.length;
+    if (N === 0) {
+      return { ids: [], documents: [], metadatas: [], distances: [] };
+    }
+
+    // 1. Calculate dense similarity for all documents in collection
+    const targetVector = queryEmbeddings[0];
+    const denseScores = [];
+    for (let i = 0; i < N; i++) {
+      const score = cosineSimilarity(targetVector, this.data.embeddings[i]);
+      denseScores.push(score);
+    }
+
+    // 2. Calculate BM25 scores for all documents in collection
+    const bm25Retriever = new BM25(this.data.documents);
+    const bm25Scores = bm25Retriever.score(queryText);
+
+    // 3. Perform Reciprocal Rank Fusion (RRF)
+    // Create ranked lists
+    const denseDocs = denseScores.map((score, index) => ({ index, score }));
+    denseDocs.sort((a, b) => b.score - a.score);
+    const denseRanks = {};
+    denseDocs.forEach((doc, rank) => {
+      denseRanks[doc.index] = rank + 1;
+    });
+
+    const bm25Docs = bm25Scores.map((score, index) => ({ index, score }));
+    bm25Docs.sort((a, b) => b.score - a.score);
+    const bm25Ranks = {};
+    bm25Docs.forEach((doc, rank) => {
+      bm25Ranks[doc.index] = rank + 1;
+    });
+
+    const rrfConstant = 60;
+    const rrfScored = [];
+    for (let i = 0; i < N; i++) {
+      const denseRank = denseRanks[i] || N + 1;
+      const bm25Rank = bm25Ranks[i] || N + 1;
+      const rrfScore = (1 / (rrfConstant + denseRank)) + (1 / (rrfConstant + bm25Rank));
+      rrfScored.push({ index: i, score: rrfScore });
+    }
+
+    // Sort by RRF score descending
+    rrfScored.sort((a, b) => b.score - a.score);
+
+    // Retrieve top K candidates for re-ranking
+    const candidates = rrfScored.slice(0, topK);
+    const candidateDocs = candidates.map(c => this.data.documents[c.index]);
+
+    let finalRanked = [];
+    if (rerankerInstance && candidateDocs.length > 0) {
+      // 4. Run Re-ranker over the top K candidates
+      const rerankScores = await rerankerInstance.rerank(queryText, candidateDocs);
+      
+      // Map candidates to their re-ranker scores
+      const rerankedCandidates = candidates.map((c, idx) => ({
+        index: c.index,
+        score: rerankScores[idx] !== undefined ? rerankScores[idx] : -9999
+      }));
+
+      // Sort by re-ranker score descending
+      rerankedCandidates.sort((a, b) => b.score - a.score);
+      finalRanked = rerankedCandidates.slice(0, nResults);
+    } else {
+      // If no re-ranker, just use the top results from RRF
+      finalRanked = candidates.slice(0, nResults);
+    }
+
+    // Format output matching query structure
+    const results = {
+      ids: finalRanked.map(r => this.data.ids[r.index]),
+      documents: finalRanked.map(r => this.data.documents[r.index]),
+      metadatas: finalRanked.map(r => this.data.metadatas[r.index]),
+      distances: finalRanked.map(r => r.score)
+    };
 
     return results;
   }
@@ -287,5 +386,67 @@ export class ChromaClient {
         resolve();
       });
     });
+  }
+}
+
+/**
+ * Self-contained BM25 term matching relevance scorer.
+ */
+class BM25 {
+  constructor(documents, k1 = 1.5, b = 0.75) {
+    this.k1 = k1;
+    this.b = b;
+    this.documents = documents;
+    this.N = documents.length;
+    this.docTokens = documents.map(doc => this.tokenize(doc));
+    this.docLengths = this.docTokens.map(tokens => tokens.length);
+    const totalLength = this.docLengths.reduce((sum, len) => sum + len, 0);
+    this.avgdl = this.N > 0 ? totalLength / this.N : 0;
+
+    this.docFreqs = {};
+    for (const tokens of this.docTokens) {
+      const uniqueTokens = new Set(tokens);
+      for (const token of uniqueTokens) {
+        this.docFreqs[token] = (this.docFreqs[token] || 0) + 1;
+      }
+    }
+  }
+
+  tokenize(text) {
+    if (!text) return [];
+    return text.toLowerCase()
+      .replace(/[^a-zA-Z0-9\s]/g, "")
+      .split(/\s+/)
+      .filter(w => w.length > 0);
+  }
+
+  idf(term) {
+    const df = this.docFreqs[term] || 0;
+    return Math.log((this.N - df + 0.5) / (df + 0.5) + 1);
+  }
+
+  score(query) {
+    const queryTokens = this.tokenize(query);
+    const scores = new Array(this.N).fill(0);
+
+    if (this.N === 0) return scores;
+
+    for (const token of queryTokens) {
+      const idfVal = this.idf(token);
+      
+      for (let i = 0; i < this.N; i++) {
+        const docTokens = this.docTokens[i];
+        const tf = docTokens.filter(t => t === token).length;
+        const docLen = this.docLengths[i];
+
+        if (tf > 0) {
+          const numerator = tf * (this.k1 + 1);
+          const denominator = tf + this.k1 * (1 - this.b + this.b * (docLen / this.avgdl));
+          scores[i] += idfVal * (numerator / denominator);
+        }
+      }
+    }
+
+    return scores;
   }
 }

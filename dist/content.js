@@ -155,6 +155,79 @@
       return results;
     }
     /**
+     * Queries the collection using hybrid search (dense + BM25) and re-ranks the results.
+     * @param {Object} params
+     * @param {string} params.queryText - The raw query text
+     * @param {number[][]} params.queryEmbeddings - The query vector
+     * @param {number} [params.nResults] - The final number of results to return
+     * @param {Object} [params.rerankerInstance] - Re-ranker class instance
+     * @param {number} [params.topK] - Candidate list size for re-ranking
+     * @returns {Promise<Object>} Results structure
+     */
+    async queryHybrid({ queryText, queryEmbeddings, nResults = 3, rerankerInstance = null, topK = 10 }) {
+      if (!queryEmbeddings || queryEmbeddings.length === 0) {
+        throw new Error("Query embeddings must be provided.");
+      }
+      if (!queryText) {
+        throw new Error("Query text must be provided.");
+      }
+      await this.load();
+      const N = this.data.ids.length;
+      if (N === 0) {
+        return { ids: [], documents: [], metadatas: [], distances: [] };
+      }
+      const targetVector = queryEmbeddings[0];
+      const denseScores = [];
+      for (let i = 0; i < N; i++) {
+        const score = cosineSimilarity(targetVector, this.data.embeddings[i]);
+        denseScores.push(score);
+      }
+      const bm25Retriever = new BM25(this.data.documents);
+      const bm25Scores = bm25Retriever.score(queryText);
+      const denseDocs = denseScores.map((score, index) => ({ index, score }));
+      denseDocs.sort((a, b) => b.score - a.score);
+      const denseRanks = {};
+      denseDocs.forEach((doc, rank) => {
+        denseRanks[doc.index] = rank + 1;
+      });
+      const bm25Docs = bm25Scores.map((score, index) => ({ index, score }));
+      bm25Docs.sort((a, b) => b.score - a.score);
+      const bm25Ranks = {};
+      bm25Docs.forEach((doc, rank) => {
+        bm25Ranks[doc.index] = rank + 1;
+      });
+      const rrfConstant = 60;
+      const rrfScored = [];
+      for (let i = 0; i < N; i++) {
+        const denseRank = denseRanks[i] || N + 1;
+        const bm25Rank = bm25Ranks[i] || N + 1;
+        const rrfScore = 1 / (rrfConstant + denseRank) + 1 / (rrfConstant + bm25Rank);
+        rrfScored.push({ index: i, score: rrfScore });
+      }
+      rrfScored.sort((a, b) => b.score - a.score);
+      const candidates = rrfScored.slice(0, topK);
+      const candidateDocs = candidates.map((c) => this.data.documents[c.index]);
+      let finalRanked = [];
+      if (rerankerInstance && candidateDocs.length > 0) {
+        const rerankScores = await rerankerInstance.rerank(queryText, candidateDocs);
+        const rerankedCandidates = candidates.map((c, idx) => ({
+          index: c.index,
+          score: rerankScores[idx] !== void 0 ? rerankScores[idx] : -9999
+        }));
+        rerankedCandidates.sort((a, b) => b.score - a.score);
+        finalRanked = rerankedCandidates.slice(0, nResults);
+      } else {
+        finalRanked = candidates.slice(0, nResults);
+      }
+      const results = {
+        ids: finalRanked.map((r) => this.data.ids[r.index]),
+        documents: finalRanked.map((r) => this.data.documents[r.index]),
+        metadatas: finalRanked.map((r) => this.data.metadatas[r.index]),
+        distances: finalRanked.map((r) => r.score)
+      };
+      return results;
+    }
+    /**
      * Retrieves records from the collection.
      * @param {Object} [params]
      * @param {string[]} [params.ids]
@@ -238,8 +311,86 @@
       });
     }
   };
+  var BM25 = class {
+    constructor(documents, k1 = 1.5, b = 0.75) {
+      this.k1 = k1;
+      this.b = b;
+      this.documents = documents;
+      this.N = documents.length;
+      this.docTokens = documents.map((doc) => this.tokenize(doc));
+      this.docLengths = this.docTokens.map((tokens) => tokens.length);
+      const totalLength = this.docLengths.reduce((sum, len2) => sum + len2, 0);
+      this.avgdl = this.N > 0 ? totalLength / this.N : 0;
+      this.docFreqs = {};
+      for (const tokens of this.docTokens) {
+        const uniqueTokens = new Set(tokens);
+        for (const token of uniqueTokens) {
+          this.docFreqs[token] = (this.docFreqs[token] || 0) + 1;
+        }
+      }
+    }
+    tokenize(text) {
+      if (!text) return [];
+      return text.toLowerCase().replace(/[^a-zA-Z0-9\s]/g, "").split(/\s+/).filter((w) => w.length > 0);
+    }
+    idf(term) {
+      const df = this.docFreqs[term] || 0;
+      return Math.log((this.N - df + 0.5) / (df + 0.5) + 1);
+    }
+    score(query) {
+      const queryTokens = this.tokenize(query);
+      const scores = new Array(this.N).fill(0);
+      if (this.N === 0) return scores;
+      for (const token of queryTokens) {
+        const idfVal = this.idf(token);
+        for (let i = 0; i < this.N; i++) {
+          const docTokens = this.docTokens[i];
+          const tf = docTokens.filter((t) => t === token).length;
+          const docLen = this.docLengths[i];
+          if (tf > 0) {
+            const numerator = tf * (this.k1 + 1);
+            const denominator = tf + this.k1 * (1 - this.b + this.b * (docLen / this.avgdl));
+            scores[i] += idfVal * (numerator / denominator);
+          }
+        }
+      }
+      return scores;
+    }
+  };
 
   // src/rag.js
+  function getLanguageModelAPI() {
+    if (typeof window !== "undefined") {
+      if (window.LanguageModel) return window.LanguageModel;
+      if (window.ai && window.ai.languageModel) return window.ai.languageModel;
+      if (window.ai && window.ai.assistant) return window.ai.assistant;
+    }
+    if (typeof LanguageModel !== "undefined") return LanguageModel;
+    if (typeof ai !== "undefined" && ai.languageModel) return ai.languageModel;
+    if (typeof ai !== "undefined" && ai.assistant) return ai.assistant;
+    return null;
+  }
+  async function checkBuiltInAIAvailability() {
+    const LM = getLanguageModelAPI();
+    if (!LM) {
+      return false;
+    }
+    try {
+      let available = "no";
+      if (typeof LM.availability === "function") {
+        available = await LM.availability();
+      } else if (typeof LM.capabilities === "function") {
+        const capabilities = await LM.capabilities();
+        available = capabilities.available || "no";
+      } else {
+        available = "available";
+      }
+      return available !== "no" && available !== "unavailable";
+    } catch (e) {
+      console.warn("Checking built-in AI availability failed, assuming true since API is present:", e);
+      return true;
+    }
+  }
   var RAGStrategy = class {
     /**
      * Generates a matching report comparing JD vs User data.
@@ -265,12 +416,12 @@
   };
   var ChromeBuiltInAIStrategy = class extends RAGStrategy {
     async getAISession() {
+      const LM = getLanguageModelAPI();
+      if (!LM) {
+        throw new Error("LanguageModel API is not defined in this browser.");
+      }
       try {
-        const capabilities = await window.ai.languageModel.capabilities();
-        if (capabilities.available === "no") {
-          throw new Error("Gemini Nano is not ready on this device.");
-        }
-        return await window.ai.languageModel.create({
+        return await LM.create({
           temperature: 0.3,
           topK: 3
         });
@@ -293,8 +444,10 @@ ${jdChunks.join("\n---\n")}
 Provide a JSON report. Return ONLY a valid JSON object matching this schema. Do not enclose it in markdown blocks or write conversational text:
 {
   "score": <number from 0 to 100 matching how well the candidate fits the JD>,
-  "matches": [<array of string sentences highlighting areas of strong alignment>],
-  "suggestions": [<array of string sentences detailing what specific skills/experiences the candidate should add or elaborate on to better match the JD>]
+  "summary": "<a concise 2-3 sentence paragraph summarizing overall alignment>",
+  "matches": [<array of 3-4 concise bullet points of matching skills/experiences>],
+  "suggestions": [<array of 3-4 concise bullet points of gaps or improvements needed to align better with the JD>],
+  "strengths": [<array of 3-4 concise bullet points highlighting the candidate's core strengths based on their profile>]
 }`;
       try {
         const response = await session.prompt(prompt);
@@ -344,19 +497,12 @@ Instructions:
      * Initializes the strategy based on environment capabilities.
      */
     async initStrategy() {
-      const isBrowserAIAvailable = typeof window !== "undefined" && window.ai && window.ai.languageModel;
-      if (isBrowserAIAvailable) {
-        try {
-          const capabilities = await window.ai.languageModel.capabilities();
-          if (capabilities.available !== "no") {
-            this.strategy = new ChromeBuiltInAIStrategy();
-            return;
-          }
-        } catch (e) {
-          console.warn("Error checking Gemini Nano capabilities:", e);
-        }
+      const isAvailable = await checkBuiltInAIAvailability();
+      if (isAvailable) {
+        this.strategy = new ChromeBuiltInAIStrategy();
+      } else {
+        this.strategy = null;
       }
-      this.strategy = null;
     }
     /**
      * Generates a matching report comparing JD vs User data.
@@ -1162,7 +1308,7 @@ Instructions:
       throw O(e = "Aborted(" + e + ")"), W = true, e = new WebAssembly.RuntimeError(e + ". Build with -sASSERTIONS for more info."), R?.(e), e;
     }
     function Ye() {
-      return { a: { f: zs, J: Vs, k: js, p: Hs, l: Ys, sa: qs, b: Js, ca: Xs, Ja: Sn, q: Qs, da: Ln, Za: On, Fa: Bn, Ha: Mn, _a: Cn, Xa: Un, Qa: Dn, Wa: Pn, oa: _n, Ga: Rn, Xb: Nn, Ya: kn, Yb: Wn, db: Zs, Da: ei, Sb: ti, Qb: ni, Ca: ai, M: si, I: ii, Rb: ui, ja: hi, Tb: yi, Ta: bi, Vb: gi, Ka: Ti, Ob: vi, ka: Ei, Sa: Ar, ab: Si, U: Li, n: Ui, c: Er, rb: Di, w: Pi, L: _i, z: Ri, j: Ni, o: Yn, sb: ki, G: Wi, T: Fi, h: Gi, u: $i, m: zi, i: Vi, Na: ji, Oa: Hi, Pa: Yi, La: Qn, Ma: Zn, Pb: Kn, eb: Ji, cb: Zi, Y: Ki, qb: eu, la: tu, bb: Xi, fb: ru, $a: nu, Wb: ou, N: qi, gb: au, X: su, Ub: iu, nb: yu, C: bu, ra: wu, qa: gu, pb: Tu, W: vu, v: Eu, mb: Su, lb: Au, kb: Iu, ob: xu, jb: Lu, ib: Ou, hb: Bu, Ua: ao, Va: so, Ia: br, V: io, na: uo, Ra: fo, ma: co, Cb: Ff, xa: Pf, Db: Wf, ya: Df, F: Ef, e: ff, s: sf, x: af, B: gf, Fb: Mf, ba: Bf, D: lf, za: Cf, $: _f, ga: Of, Gb: Lf, Hb: xf, Ba: Sf, Aa: If2, Ib: Af, wa: kf, aa: Uf, d: uf, A: df, r: cf, Bb: Gf, t: mf, y: Tf, H: pf, E: hf, K: vf, R: Rf, ia: wf, _: Nf, Jb: bf, Kb: yf, g: Cu, a: Fe, Nb: qe, Eb: Uu, ha: Du, O: Pu, pa: _u, Lb: Ru, ta: Nu, Q: ku, yb: Wu, zb: Fu, ua: Gu, ea: $u, P: zu, Ea: Vu, va: ju, Z: Hu, wb: Yu, Zb: qu, S: Ju, Ab: Xu, tb: Qu, ub: Ku, vb: ef, fa: tf, xb: rf, Mb: nf } };
+      return { a: { f: zs, J: Vs, k: js, p: Hs, l: Ys, sa: qs, b: Js, ca: Xs, Ja: Sn, q: Qs, da: Ln, Za: On, Fa: Bn, Ha: Mn, _a: Cn, Xa: Un, Qa: Dn, Wa: Pn, oa: _n, Ga: Rn, Xb: Nn, Ya: kn, Yb: Wn, db: Zs, Da: ei, Sb: ti, Qb: ni, Ca: ai2, M: si, I: ii, Rb: ui, ja: hi, Tb: yi, Ta: bi, Vb: gi, Ka: Ti, Ob: vi, ka: Ei, Sa: Ar, ab: Si, U: Li, n: Ui, c: Er, rb: Di, w: Pi, L: _i, z: Ri, j: Ni, o: Yn, sb: ki, G: Wi, T: Fi, h: Gi, u: $i, m: zi, i: Vi, Na: ji, Oa: Hi, Pa: Yi, La: Qn, Ma: Zn, Pb: Kn, eb: Ji, cb: Zi, Y: Ki, qb: eu, la: tu, bb: Xi, fb: ru, $a: nu, Wb: ou, N: qi, gb: au, X: su, Ub: iu, nb: yu, C: bu, ra: wu, qa: gu, pb: Tu, W: vu, v: Eu, mb: Su, lb: Au, kb: Iu, ob: xu, jb: Lu, ib: Ou, hb: Bu, Ua: ao, Va: so, Ia: br, V: io, na: uo, Ra: fo, ma: co, Cb: Ff, xa: Pf, Db: Wf, ya: Df, F: Ef, e: ff, s: sf, x: af, B: gf, Fb: Mf, ba: Bf, D: lf, za: Cf, $: _f, ga: Of, Gb: Lf, Hb: xf, Ba: Sf, Aa: If2, Ib: Af, wa: kf, aa: Uf, d: uf, A: df, r: cf, Bb: Gf, t: mf, y: Tf, H: pf, E: hf, K: vf, R: Rf, ia: wf, _: Nf, Jb: bf, Kb: yf, g: Cu, a: Fe, Nb: qe, Eb: Uu, ha: Du, O: Pu, pa: _u, Lb: Ru, ta: Nu, Q: ku, yb: Wu, zb: Fu, ua: Gu, ea: $u, P: zu, Ea: Vu, va: ju, Z: Hu, wb: Yu, Zb: qu, S: Ju, Ab: Xu, tb: Qu, ub: Ku, vb: ef, fa: tf, xb: rf, Mb: nf } };
     }
     async function bt() {
       function e(o, u) {
@@ -1502,7 +1648,7 @@ Instructions:
           throw new TypeError(`invalid float width (${t}): ${e}`);
       }
     };
-    function ai(e, t, n) {
+    function ai2(e, t, n) {
       n >>>= 0, De(e >>>= 0, { name: t = Be(t >>> 0), Mc: (o) => o, Sc: (o, u) => u, Rc: oi(t, n), Tc: null });
     }
     function si(e, t, n, o, u) {
@@ -33555,12 +33701,39 @@ ${fake_token_around_image}${global_img_token}` + image_token.repeat(image_seq_le
       return embeddings;
     }
   };
+  var ReRanker = class {
+    constructor() {
+      this.modelName = "Xenova/ms-marco-MiniLM-L-6-v2";
+      this.tokenizer = null;
+      this.model = null;
+    }
+    async loadModel() {
+      if (!this.tokenizer || !this.model) {
+        this.tokenizer = await AutoTokenizer.from_pretrained(this.modelName);
+        this.model = await AutoModelForSequenceClassification.from_pretrained(this.modelName);
+      }
+    }
+    async rerank(query, documents) {
+      if (!documents || documents.length === 0) return [];
+      await this.loadModel();
+      try {
+        const pairs = documents.map((doc) => [query, doc]);
+        const inputs = await this.tokenizer(pairs, { padding: true, truncation: true });
+        const output = await this.model(inputs);
+        return Array.from(output.logits.data);
+      } catch (e) {
+        console.error("Batch ReRanker error, falling back to dummy scores:", e);
+        return new Array(documents.length).fill(-9999);
+      }
+    }
+  };
 
   // content.js
   var ragService = new RAGService();
   var chromaClient = new ChromaClient();
   var embeddingEngine = new EmbeddingEngine();
   var splitter = new TextSplitter({ chunkSize: 200, chunkOverlap: 30 });
+  var reranker = new ReRanker();
   var tabId = null;
   var isSyncingProfile = false;
   var isSyncingJD = false;
@@ -34113,17 +34286,37 @@ ${fake_token_around_image}${global_img_token}` + image_token.repeat(image_seq_le
       }
     }
   }
+  function getLanguageModelAPI2() {
+    if (typeof window !== "undefined") {
+      if (window.LanguageModel) return window.LanguageModel;
+      if (window.ai && window.ai.languageModel) return window.ai.languageModel;
+      if (window.ai && window.ai.assistant) return window.ai.assistant;
+    }
+    if (typeof LanguageModel !== "undefined") return LanguageModel;
+    if (typeof ai !== "undefined" && ai.languageModel) return ai.languageModel;
+    if (typeof ai !== "undefined" && ai.assistant) return ai.assistant;
+    return null;
+  }
   async function checkGeminiNano() {
-    const isBrowserAIAvailable = typeof window !== "undefined" && window.ai && window.ai.languageModel;
+    const LM = getLanguageModelAPI2();
     let ready = false;
-    if (isBrowserAIAvailable) {
+    if (LM) {
       try {
-        const capabilities = await window.ai.languageModel.capabilities();
-        if (capabilities.available !== "no") {
+        let available = "no";
+        if (typeof LM.availability === "function") {
+          available = await LM.availability();
+        } else if (typeof LM.capabilities === "function") {
+          const capabilities = await LM.capabilities();
+          available = capabilities.available || "no";
+        } else {
+          available = "available";
+        }
+        if (available !== "no" && available !== "unavailable") {
           ready = true;
         }
       } catch (e) {
-        console.warn("Gemini Nano capabilities check failed:", e);
+        console.warn("Gemini Nano availability check failed, assuming true since API is present:", e);
+        ready = true;
       }
     }
     if (!ready) {
@@ -34239,20 +34432,30 @@ ${fake_token_around_image}${global_img_token}` + image_token.repeat(image_seq_le
       showStatus("Gemini Nano AI is unavailable.", "error", true);
       return;
     }
-    answerBox.value = "Generating local embeddings & retrieving context...";
-    showStatus("Retrieving context...", "info");
+    answerBox.value = "Retrieving context via hybrid search (Dense + BM25)...";
+    showStatus("Performing hybrid retrieval...", "info");
     try {
       const queryEmbedding = await embeddingEngine.getEmbedding(question, { isQuery: true });
       const summaryColl = await chromaClient.getCollection("candidate_profile");
       const jdColl = await chromaClient.getCollection(`job_description_tab_${tabId}`);
-      const summaryResults = await summaryColl.query({
-        queryEmbeddings: [queryEmbedding],
-        nResults: 3
-      });
-      const jdResults = await jdColl.query({
-        queryEmbeddings: [queryEmbedding],
-        nResults: 3
-      });
+      answerBox.value = "Retrieving & re-ranking context with cross-encoder...";
+      showStatus("Retrieving and re-ranking context...", "info");
+      const [summaryResults, jdResults] = await Promise.all([
+        summaryColl.queryHybrid({
+          queryText: question,
+          queryEmbeddings: [queryEmbedding],
+          rerankerInstance: reranker,
+          topK: 5,
+          nResults: 3
+        }),
+        jdColl.queryHybrid({
+          queryText: question,
+          queryEmbeddings: [queryEmbedding],
+          rerankerInstance: reranker,
+          topK: 5,
+          nResults: 3
+        })
+      ]);
       const profileChunks = summaryResults.documents || [];
       const jdChunks = jdResults.documents || [];
       answerBox.value = "Generating answer using local RAG...";

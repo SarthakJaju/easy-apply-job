@@ -1,4 +1,4 @@
-import { pipeline, env } from '@huggingface/transformers';
+import { pipeline, env, AutoTokenizer, AutoModelForSequenceClassification } from '@huggingface/transformers';
 
 /**
  * Configure Hugging Face Transformers Environment for Chrome Extension environment.
@@ -212,5 +212,40 @@ export class EmbeddingEngine {
       }
     }
     return embeddings;
+  }
+}
+
+/**
+ * ReRanker wraps cross-encoder text classification models (e.g. ms-marco-MiniLM-L-6-v2)
+ * to score query-document pairs using raw logits.
+ */
+export class ReRanker {
+  constructor() {
+    this.modelName = 'Xenova/ms-marco-MiniLM-L-6-v2';
+    this.tokenizer = null;
+    this.model = null;
+  }
+
+  async loadModel() {
+    if (!this.tokenizer || !this.model) {
+      this.tokenizer = await AutoTokenizer.from_pretrained(this.modelName);
+      this.model = await AutoModelForSequenceClassification.from_pretrained(this.modelName);
+    }
+  }
+
+  async rerank(query, documents) {
+    if (!documents || documents.length === 0) return [];
+    
+    await this.loadModel();
+    
+    try {
+      const pairs = documents.map(doc => [query, doc]);
+      const inputs = await this.tokenizer(pairs, { padding: true, truncation: true });
+      const output = await this.model(inputs);
+      return Array.from(output.logits.data);
+    } catch (e) {
+      console.error("Batch ReRanker error, falling back to dummy scores:", e);
+      return new Array(documents.length).fill(-9999);
+    }
   }
 }

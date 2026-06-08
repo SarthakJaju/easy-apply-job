@@ -1,11 +1,12 @@
 import { RAGService } from './src/rag.js';
 import { ChromaClient } from './src/chromadb.js';
-import { EmbeddingEngine, TextSplitter } from './src/embeddings.js';
+import { EmbeddingEngine, TextSplitter, ReRanker } from './src/embeddings.js';
 
 const ragService = new RAGService();
 const chromaClient = new ChromaClient();
 const embeddingEngine = new EmbeddingEngine();
 const splitter = new TextSplitter({ chunkSize: 200, chunkOverlap: 30 });
+const reranker = new ReRanker();
 
 let tabId = null;
 let isSyncingProfile = false;
@@ -660,21 +661,38 @@ async function loadAndRenderReport() {
   }
 }
 
-/**
- * Helper to check Gemini Nano availability.
- * @returns {Promise<boolean>}
- */
+function getLanguageModelAPI() {
+  if (typeof window !== 'undefined') {
+    if (window.LanguageModel) return window.LanguageModel;
+    if (window.ai && window.ai.languageModel) return window.ai.languageModel;
+    if (window.ai && window.ai.assistant) return window.ai.assistant;
+  }
+  if (typeof LanguageModel !== 'undefined') return LanguageModel;
+  if (typeof ai !== 'undefined' && ai.languageModel) return ai.languageModel;
+  if (typeof ai !== 'undefined' && ai.assistant) return ai.assistant;
+  return null;
+}
+
 async function checkGeminiNano() {
-  const isBrowserAIAvailable = typeof window !== 'undefined' && window.ai && window.ai.languageModel;
+  const LM = getLanguageModelAPI();
   let ready = false;
-  if (isBrowserAIAvailable) {
+  if (LM) {
     try {
-      const capabilities = await window.ai.languageModel.capabilities();
-      if (capabilities.available !== 'no') {
+      let available = 'no';
+      if (typeof LM.availability === 'function') {
+        available = await LM.availability();
+      } else if (typeof LM.capabilities === 'function') {
+        const capabilities = await LM.capabilities();
+        available = capabilities.available || 'no';
+      } else {
+        available = 'available';
+      }
+      if (available !== 'no' && available !== 'unavailable') {
         ready = true;
       }
     } catch (e) {
-      console.warn("Gemini Nano capabilities check failed:", e);
+      console.warn("Gemini Nano availability check failed, assuming true since API is present:", e);
+      ready = true;
     }
   }
 
@@ -835,8 +853,8 @@ async function handleQuestionSubmit() {
     return;
   }
 
-  answerBox.value = "Generating local embeddings & retrieving context...";
-  showStatus("Retrieving context...", "info");
+  answerBox.value = "Retrieving context via hybrid search (Dense + BM25)...";
+  showStatus("Performing hybrid retrieval...", "info");
 
   try {
     const queryEmbedding = await embeddingEngine.getEmbedding(question, { isQuery: true });
@@ -844,15 +862,25 @@ async function handleQuestionSubmit() {
     const summaryColl = await chromaClient.getCollection("candidate_profile");
     const jdColl = await chromaClient.getCollection(`job_description_tab_${tabId}`);
 
-    const summaryResults = await summaryColl.query({
-      queryEmbeddings: [queryEmbedding],
-      nResults: 3
-    });
+    answerBox.value = "Retrieving & re-ranking context with cross-encoder...";
+    showStatus("Retrieving and re-ranking context...", "info");
 
-    const jdResults = await jdColl.query({
-      queryEmbeddings: [queryEmbedding],
-      nResults: 3
-    });
+    const [summaryResults, jdResults] = await Promise.all([
+      summaryColl.queryHybrid({
+        queryText: question,
+        queryEmbeddings: [queryEmbedding],
+        rerankerInstance: reranker,
+        topK: 5,
+        nResults: 3
+      }),
+      jdColl.queryHybrid({
+        queryText: question,
+        queryEmbeddings: [queryEmbedding],
+        rerankerInstance: reranker,
+        topK: 5,
+        nResults: 3
+      })
+    ]);
 
     const profileChunks = summaryResults.documents || [];
     const jdChunks = jdResults.documents || [];

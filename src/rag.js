@@ -1,6 +1,48 @@
 import { cosineSimilarity } from './chromadb.js';
 
 /**
+ * Resolves the available Prompt API entry class depending on the Chrome version.
+ */
+function getLanguageModelAPI() {
+  if (typeof window !== 'undefined') {
+    if (window.LanguageModel) return window.LanguageModel;
+    if (window.ai && window.ai.languageModel) return window.ai.languageModel;
+    if (window.ai && window.ai.assistant) return window.ai.assistant;
+  }
+  if (typeof LanguageModel !== 'undefined') return LanguageModel;
+  if (typeof ai !== 'undefined' && ai.languageModel) return ai.languageModel;
+  if (typeof ai !== 'undefined' && ai.assistant) return ai.assistant;
+  return null;
+}
+
+/**
+ * Helper to check if Chrome's built-in Gemini Nano AI is available.
+ * Supports both modern availability() and legacy capabilities() APIs.
+ * @returns {Promise<boolean>}
+ */
+async function checkBuiltInAIAvailability() {
+  const LM = getLanguageModelAPI();
+  if (!LM) {
+    return false;
+  }
+  try {
+    let available = 'no';
+    if (typeof LM.availability === 'function') {
+      available = await LM.availability();
+    } else if (typeof LM.capabilities === 'function') {
+      const capabilities = await LM.capabilities();
+      available = capabilities.available || 'no';
+    } else {
+      available = 'available'; // Assume available if LM class exists
+    }
+    return available !== 'no' && available !== 'unavailable';
+  } catch (e) {
+    console.warn("Checking built-in AI availability failed, assuming true since API is present:", e);
+    return true;
+  }
+}
+
+/**
  * Base strategy for RAG Text Generation.
  * SOLID: Open-Closed Principle (new AI strategies can be plugged in easily).
  */
@@ -34,12 +76,12 @@ class RAGStrategy {
  */
 class ChromeBuiltInAIStrategy extends RAGStrategy {
   async getAISession() {
+    const LM = getLanguageModelAPI();
+    if (!LM) {
+      throw new Error("LanguageModel API is not defined in this browser.");
+    }
     try {
-      const capabilities = await window.ai.languageModel.capabilities();
-      if (capabilities.available === 'no') {
-        throw new Error("Gemini Nano is not ready on this device.");
-      }
-      return await window.ai.languageModel.create({
+      return await LM.create({
         temperature: 0.3,
         topK: 3
       });
@@ -64,8 +106,10 @@ ${jdChunks.join("\n---\n")}
 Provide a JSON report. Return ONLY a valid JSON object matching this schema. Do not enclose it in markdown blocks or write conversational text:
 {
   "score": <number from 0 to 100 matching how well the candidate fits the JD>,
-  "matches": [<array of string sentences highlighting areas of strong alignment>],
-  "suggestions": [<array of string sentences detailing what specific skills/experiences the candidate should add or elaborate on to better match the JD>]
+  "summary": "<a concise 2-3 sentence paragraph summarizing overall alignment>",
+  "matches": [<array of 3-4 concise bullet points of matching skills/experiences>],
+  "suggestions": [<array of 3-4 concise bullet points of gaps or improvements needed to align better with the JD>],
+  "strengths": [<array of 3-4 concise bullet points highlighting the candidate's core strengths based on their profile>]
 }`;
 
     try {
@@ -123,8 +167,10 @@ class SemanticSynthesisStrategy extends RAGStrategy {
     if (!userEmbeddings || !jdEmbeddings || userEmbeddings.length === 0 || jdEmbeddings.length === 0) {
       return {
         score: 0,
-        matches: ["Please save your Career Summary and a valid Job Description to calculate alignment."],
-        suggestions: ["Save your profile data and scan a job details page."]
+        summary: "Please save your Career Summary and a valid Job Description to calculate alignment.",
+        matches: ["Save your profile data and scan a job details page."],
+        suggestions: ["Save your profile data and scan a job details page."],
+        strengths: ["Save your profile data and scan a job details page."]
       };
     }
 
@@ -186,10 +232,15 @@ class SemanticSynthesisStrategy extends RAGStrategy {
       uniqueSuggestions.push("Your profile matches this job description very well! No major gaps identified.");
     }
 
+    const strengths = uniqueMatches.map(m => m.replace(/Matches requirement: |Strong alignment with: /, "Proficient in "));
+    const summary = `Candidate profile shows ${score >= 75 ? 'strong' : score >= 50 ? 'moderate' : 'limited'} semantic alignment with the job description. Core matches were found in ${uniqueMatches.length} areas, with ${uniqueSuggestions.length} recommendation areas for optimization.`;
+
     return {
       score: score,
+      summary: summary,
       matches: uniqueMatches,
-      suggestions: uniqueSuggestions
+      suggestions: uniqueSuggestions,
+      strengths: strengths
     };
   }
 
@@ -313,19 +364,12 @@ export class RAGService {
    * Initializes the strategy based on environment capabilities.
    */
   async initStrategy() {
-    const isBrowserAIAvailable = typeof window !== 'undefined' && window.ai && window.ai.languageModel;
-    if (isBrowserAIAvailable) {
-      try {
-        const capabilities = await window.ai.languageModel.capabilities();
-        if (capabilities.available !== 'no') {
-          this.strategy = new ChromeBuiltInAIStrategy();
-          return;
-        }
-      } catch (e) {
-        console.warn("Error checking Gemini Nano capabilities:", e);
-      }
+    const isAvailable = await checkBuiltInAIAvailability();
+    if (isAvailable) {
+      this.strategy = new ChromeBuiltInAIStrategy();
+    } else {
+      this.strategy = null;
     }
-    this.strategy = null;
   }
 
   /**
