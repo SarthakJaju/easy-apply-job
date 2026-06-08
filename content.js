@@ -839,7 +839,7 @@ async function handleQuestionSubmit() {
   showStatus("Retrieving context...", "info");
 
   try {
-    const queryEmbedding = await embeddingEngine.getEmbedding(question);
+    const queryEmbedding = await embeddingEngine.getEmbedding(question, { isQuery: true });
     
     const summaryColl = await chromaClient.getCollection("candidate_profile");
     const jdColl = await chromaClient.getCollection(`job_description_tab_${tabId}`);

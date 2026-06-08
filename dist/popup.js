@@ -33351,7 +33351,7 @@ ${fake_token_around_image}${global_img_token}` + image_token.repeat(image_seq_le
   };
   var EmbeddingEngine = class {
     constructor() {
-      this.modelName = "Xenova/all-MiniLM-L6-v2";
+      this.modelName = "Xenova/bge-small-en-v1.5";
       this.pipelineInstance = null;
     }
     /**
@@ -33367,11 +33367,17 @@ ${fake_token_around_image}${global_img_token}` + image_token.repeat(image_seq_le
     /**
      * Generates a 384-dimension vector embedding for a single text chunk.
      * @param {string} text - Text chunk
+     * @param {Object} [options]
+     * @param {boolean} [options.isQuery] - Whether this text is a query
      * @returns {Promise<number[]>} The dense vector embedding
      */
-    async getEmbedding(text) {
+    async getEmbedding(text, { isQuery = false } = {}) {
       const extractor = await this.getPipeline();
-      const output = await extractor(text, {
+      let processedText = text;
+      if (isQuery && this.modelName.includes("bge-")) {
+        processedText = "Represent this sentence for searching relevant passages: " + text;
+      }
+      const output = await extractor(processedText, {
         pooling: "mean",
         normalize: true
       });
